@@ -12,6 +12,7 @@ df = pd.read_csv(file_path)
 
 # Display the first few rows of the dataset to understand its structure
 df.head()
+print(df.head())
 
 # Check for missing values in the dataset
 missing_values = df.isnull().sum()
@@ -74,3 +75,5 @@ plt.show()
 
 coefficients = pd.DataFrame(model.coef_, X.columns, columns=['Coefficient'])
 print(coefficients)
+
+
