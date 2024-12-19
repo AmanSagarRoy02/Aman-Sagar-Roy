@@ -1,132 +1,230 @@
-import logging
-import random
-import time
-import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 import schedule
+import time
+import os
+from datetime import datetime
+import logging
+import sqlalchemy
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+# Configuration
+DOCUMENTS_DIR = os.path.abspath(os.path.expanduser(r"C:\Users\amans\OneDrive\Documents"))
+DATA_AUTOMATION_DIR = os.path.join(DOCUMENTS_DIR, "data_automation")
+PROCESSED_DATA_DIR = os.path.join(DATA_AUTOMATION_DIR, "processed_data")
+VISUALIZATIONS_DIR = os.path.join(DATA_AUTOMATION_DIR, "visualizations")
+LOG_FILE_PATH = os.path.join(DATA_AUTOMATION_DIR, "data_automation.log")
 
-file_handler = logging.FileHandler('attrition_analysis.log')
-file_handler.setLevel(logging.INFO)
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-logger.addHandler(file_handler)
+SCHEDULE_TYPE = "daily"
+SCHEDULE_TIME = "00:00"
+DATASET_PATH = r"C:\Users\amans\OneDrive\Documents\moviesdata.xlsx"  # Default path
+DB_CONNECTION_STRING = None
 
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-console_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
-logger.addHandler(console_handler)
+# Logging setup
+try:
+    os.makedirs(DATA_AUTOMATION_DIR, exist_ok=True)  # Create 'data_automation' directory if not exists
+    logging.basicConfig(filename=LOG_FILE_PATH, level=logging.INFO,
+                        format="%(asctime)s - %(levelname)s - %(message)s")
+except OSError as e:
+    print(f"Error creating directory or logging: {e}")
+    logging.critical(f"Error creating directory or logging: {e}")
+    exit(1)  # Exit the script if directory creation or logging setup fails
 
-def load_and_clean_data(file_path):
-    logger.info("Loading and cleaning data...")
+# Ensure subdirectories exist
+os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)  # Ensure 'processed_data' subdirectory is created
+os.makedirs(VISUALIZATIONS_DIR, exist_ok=True)
+
+
+def load_data(data_source):
+    """Loads data from a file or database."""
+    print(f"Loading data from: {data_source}")
+    logging.info(f"Loading data from: {data_source}")
+    df = None
     try:
-        excel_data = pd.ExcelFile(file_path)
-        df = excel_data.parse('Berger Paints')
-        df_cleaned = df.iloc[1:].reset_index(drop=True)
-
-        date_columns = ['Date_of_Join', 'Date_of_Leaving']
-        for col in date_columns:
-            df_cleaned[col] = pd.to_datetime(df_cleaned[col], format='%d/%m/%Y', errors='coerce')
-
-        df_cleaned['Attrition_Year_Month'] = pd.to_datetime(
-            df_cleaned['Client_Attrition_Month'] + ' ' + df_cleaned['Date_of_Leaving'].dt.year.astype(str),
-            format='%B %Y', errors='coerce')
-
-        random.seed(42)
-        np.random.seed(42)
-
-        reasons_secondary = ['Career Growth', 'Salary', 'Personal Reasons', 'Relocation', 'Work-Life Balance',
-                             'Health Issues', 'Better Opportunity', 'Company Culture']
-        reasons_tertiary = ['Work Environment', 'Supervisor Issues', 'Company Policies', 'Commute Distance', 'Workload',
-                            'Team Dynamics']
-
-        for col in ['Secondary_Reason_for_Leaving_Node_1', 'Tertiary_Reason_for_Leaving_Node_1']:
-            df_cleaned[col] = df_cleaned[col].fillna(df_cleaned[col].mode()[0])
-
-        missing_attrition_dates = df_cleaned['Attrition_Year_Month'].isna().sum()
-        df_cleaned.loc[df_cleaned['Attrition_Year_Month'].isna(), 'Attrition_Year_Month'] = pd.to_datetime(
-            np.random.choice(pd.date_range("2023-04-01", "2023-12-31"), missing_attrition_dates)
-        )
-
-        logger.info("Saving cleaned data back to the Excel file...")
-        with pd.ExcelWriter(file_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
-            df_cleaned.to_excel(writer, index=False, sheet_name='Berger Paints')
-
-        logger.info("Data cleaning complete.")
-        return df_cleaned
+        if isinstance(data_source, str) and os.path.exists(data_source):
+            file_extension = os.path.splitext(data_source)[1].lower()
+            if file_extension == ".csv":
+                df = pd.read_csv(data_source, low_memory=False)
+            elif file_extension == ".xlsx" or file_extension == ".xls":
+                df = pd.read_excel(data_source)
+            elif file_extension == ".json":
+                df = pd.read_json(data_source)
+            else:
+                logging.error(f"Unsupported file format: {file_extension}")
+                print(f"Unsupported file format: {file_extension}")
+                return None
+        elif DB_CONNECTION_STRING and isinstance(data_source, str):
+            try:
+                engine = sqlalchemy.create_engine(DB_CONNECTION_STRING)
+                df = pd.read_sql_table(data_source, engine)
+            except ImportError:
+                logging.error("SQLAlchemy or the database driver is not installed.")
+                print("SQLAlchemy or the database driver is not installed.")
+                return None
+            except sqlalchemy.exc.OperationalError as e:
+                logging.error(f"Database connection error: {e}")
+                print(f"Database connection error: {e}")
+                return None
+        else:
+            logging.error("Invalid or non-existent data source provided.")
+            print("Invalid or non-existent data source provided.")
+            return None
+        print("File/Data from database Loaded Successfully")
+        return df
+    except FileNotFoundError:
+        print(f"Error Loading Data: File Not Found at {data_source}")
+        logging.exception(f"Error loading data: File not found {data_source}")
+        return None
     except Exception as e:
-        logger.error("Error in load_and_clean_data: {}".format(e))
-        raise
+        print(f"Error Loading Data: {e}")
+        logging.exception(f"Error loading data: {e}")
+        return None
 
-def aggregate_data(df_cleaned):
-    logger.info("Aggregating data...")
-    attrition_summary = df_cleaned.groupby('Attrition_Year_Month').size().reset_index(name='Number_of_Employees_Left')
+def process_data(df):
+    """Processes data."""
+    print("Processing Data...")
+    logging.info("Processing data...")
+    if df is None:
+        print("No data to process.")
+        logging.info("No data to process.")
+        return None
 
-    reasons_summary = df_cleaned[['Secondary_Reason_for_Leaving_Node_1', 'Tertiary_Reason_for_Leaving_Node_1']].apply(
-        pd.Series.value_counts).fillna(0).astype(int)
+    try:
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        for col in numeric_cols:
+            df.loc[:, col] = df[col].fillna(df[col].mean())
 
-    logger.info("Data aggregation complete.")
-    return attrition_summary, reasons_summary
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns
+        for col in categorical_cols:
+            try:
+                df[col] = df[col].astype(str)
+                df.loc[:, col] = df[col].fillna(df[col].mode()[0])
+            except (TypeError, IndexError):
+                df.loc[:, col] = df[col].fillna("Missing")
+        print("Data Processing Complete")
+        return df
+    except Exception as e:
+        print(f"Error During Data Processing: {e}")
+        logging.exception(f"Error during data processing: {e}")
+        return None
 
-def visualize_data(attrition_summary, reasons_summary):
-    logger.info("Visualizing data...")
+def visualize_data(df):
+    """Generates visualizations."""
+    print("Generating Visualizations...")
+    logging.info("Generating visualizations...")
+    if df is None:
+        print("No data to visualize.")
+        logging.info("No data to visualize.")
+        return
 
-    if not attrition_summary.empty:
-        attrition_summary_sorted = attrition_summary.sort_values('Attrition_Year_Month')
-        plt.figure(figsize=(10, 6))
-        plt.plot(attrition_summary_sorted['Attrition_Year_Month'],
-                 attrition_summary_sorted['Number_of_Employees_Left'], marker='o')
-        plt.title('Number of Employees Who Left Each Month')
-        plt.xlabel('Month')
-        plt.ylabel('Number of Employees Left')
-        plt.xticks(rotation=45)
-        plt.grid(True)
-        plt.tight_layout()
-        plt.savefig('attrition_plot.png')
-        plt.show()
-    else:
-        logger.warning("Attrition summary is empty. No data to plot.")
+    try:
+        now = datetime.now().strftime("%Y%m%d_%H%M%S")
+        num_cols = df.select_dtypes(include=['number']).columns
+        if not num_cols.empty:
+            for col in num_cols:
+                plt.figure(figsize=(10, 6))
+                sns.histplot(df[col])
+                plt.title(f"Distribution of {col}")
+                filepath = os.path.join(VISUALIZATIONS_DIR, f"{col}_hist_{now}.png")
+                plt.savefig(filepath)
+                plt.close()
 
-    if not reasons_summary.empty:
+        cat_cols = df.select_dtypes(exclude=['number']).columns
+        for col in cat_cols:
+            if 1 <= len(df[col].unique()) <= 20:
+                plt.figure(figsize=(10, 6))
+                sns.countplot(x=col, data=df)
+                plt.xticks(rotation=45, ha='right')
+                plt.subplots_adjust(bottom=0.2)
+                plt.title(f"Count of {col}")
+                filepath = os.path.join(VISUALIZATIONS_DIR, f"{col}_count_{now}.png")
+                plt.savefig(filepath)
+                plt.close()
 
-        reasons_summary_corrected = reasons_summary.loc[reasons_summary.index != 'Unknown']
+        if len(num_cols) > 1:
+            corr_matrix = df.corr(numeric_only=True)
+            plt.figure(figsize=(12, 10))
+            sns.heatmap(corr_matrix, annot=True, cmap="coolwarm")
+            plt.title("Correlation Heatmap")
+            filepath = os.path.join(VISUALIZATIONS_DIR, f"corr_heatmap_{now}.png")
+            plt.savefig(filepath)
+            plt.close()
+        else:
+            logging.warning("Not enough numeric columns to generate correlation heatmap.")
+            print("Not enough numeric columns to generate correlation heatmap.")
 
-        reasons_summary_top = reasons_summary_corrected.sum(axis=1).nlargest(10)
-        plt.figure(figsize=(10, 6))
-        reasons_summary_top.plot(kind='barh', color='skyblue')
-        plt.title('Top 10 Reasons for Leaving')
-        plt.xlabel('Number of Employees')
-        plt.ylabel('Reason')
-        plt.grid(True)
-        plt.tight_layout()
-        plt.savefig('reasons_plot.png')
-        plt.show()
-    else:
-        logger.warning("Reasons summary is empty. No data to plot.")
+        print("Visualizations Saved")
+    except Exception as e:
+        print(f"Error During Visualization: {e}")
+        logging.error(f"Error during visualization: {e}")
 
-    logger.info("Visualization complete.")
+def automate_data_tasks(data_source):
+    """Automates the entire process."""
+    print("Starting Data Automation Task")
+    df = load_data(data_source)
+    if df is not None:
+        df = process_data(df)
+        if df is not None:
+            now = datetime.now().strftime("%Y%m%d_%H%M%S")
+            processed_file_path = os.path.join(PROCESSED_DATA_DIR, f"processed_data_{now}.csv")
+            df.to_csv(processed_file_path, index=False)
+            print(f"Processed data saved to: {processed_file_path}")
+            logging.info(f"Processed data saved to: {processed_file_path}")
+            visualize_data(df)
+
+def schedule_tasks(data_source, schedule_type, schedule_time):
+    """Schedules tasks."""
+    try:
+        if schedule_type == "daily":
+            schedule.every().day.at(schedule_time).do(automate_data_tasks, data_source)
+        elif schedule_type == "weekly":
+            schedule.every().week.on(0).at(schedule_time).do(automate_data_tasks, data_source)
+        elif schedule_type == "monthly":
+            schedule.every(30).days.at(schedule_time).do(automate_data_tasks, data_source)
+        else:
+            raise ValueError("Invalid schedule type.")
+
+        print(f"Tasks scheduled to run {schedule_type} at {schedule_time}.")
+        logging.info(f"Tasks scheduled to run {schedule_type} at {schedule_time}.")
+
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
+
+    except ValueError as e:
+        print(str(e))
+        logging.error(str(e))
+    except Exception as e:
+        print(f"Scheduling Error: {e}")
+        logging.exception(f"Scheduling error: {e}")
 
 def main():
-    logger.info("Starting main process...")
-    file_path = r"C:/Users/amans/OneDrive/Documents/Berger Paint Attrition Analysis April_2023 To December_2023.xlsx"
+    """Main function."""
+    global DATASET_PATH, SCHEDULE_TYPE, SCHEDULE_TIME
     try:
-        df_cleaned = load_and_clean_data(file_path)
-        attrition_summary, reasons_summary = aggregate_data(df_cleaned)
-        visualize_data(attrition_summary, reasons_summary)
-        logger.info("Data processing and visualization complete.")
+        DATASET_PATH = input(f"Enter dataset file path (or press Enter for default: {DATASET_PATH}): ") or DATASET_PATH
+        if not os.path.exists(DATASET_PATH):
+            raise FileNotFoundError(f"File not found: {DATASET_PATH}")
+
+        SCHEDULE_TYPE = input(f"Enter schedule type (daily/weekly/monthly, or press Enter for default: {SCHEDULE_TYPE}): ").lower() or SCHEDULE_TYPE
+        if SCHEDULE_TYPE not in ("daily", "weekly", "monthly"):
+            raise ValueError("Invalid schedule type.")
+
+        SCHEDULE_TIME = input(f"Enter schedule time (HH:MM, or press Enter for default: {SCHEDULE_TIME}): ") or SCHEDULE_TIME
+        datetime.strptime(SCHEDULE_TIME, '%H:%M')
+
+        automate_data_tasks(DATASET_PATH)  # Run once immediately
+        schedule_tasks(DATASET_PATH, SCHEDULE_TYPE, SCHEDULE_TIME)
+
+    except FileNotFoundError as e:
+        print(str(e))
+        logging.error(str(e))
+    except ValueError as e:
+        print(str(e))
+        logging.error(str(e))
     except Exception as e:
-        logger.error("Error in main function: {}".format(e))
+        print(f"An unexpected error occurred in main: {e}")
+        logging.exception(f"An unexpected error occurred in main: {e}")
 
-def run_daily():
-    logger.info("Running scheduled task...")
+if __name__ == "__main__":
     main()
-
-schedule.every().day.at("00:00:00").do(run_daily)
-
-print("Scheduler setup complete. Waiting for the scheduled time...")
-
-while True:
-    schedule.run_pending()
-    time.sleep(30)
