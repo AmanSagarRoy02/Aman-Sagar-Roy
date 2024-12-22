@@ -310,3 +310,7 @@ print(a[3:8])
 print(len(a[3:8]))
 print(a[-8:-3])
 print(a[::-2])
+
+X={1,2,3,4,5}
+X.add(6)
+print(X)

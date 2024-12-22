@@ -9,7 +9,7 @@ import logging
 import sqlalchemy
 
 # Configuration
-DOCUMENTS_DIR = os.path.abspath(os.path.expanduser(r"C:\Users\amans\OneDrive\Documents"))
+DOCUMENTS_DIR = os.path.abspath(os.path.expanduser(r"C:\Users\amans\OneDrive\Documents"))  # Replace with your path
 DATA_AUTOMATION_DIR = os.path.join(DOCUMENTS_DIR, "data_automation")
 PROCESSED_DATA_DIR = os.path.join(DATA_AUTOMATION_DIR, "processed_data")
 VISUALIZATIONS_DIR = os.path.join(DATA_AUTOMATION_DIR, "visualizations")
@@ -17,71 +17,69 @@ LOG_FILE_PATH = os.path.join(DATA_AUTOMATION_DIR, "data_automation.log")
 
 SCHEDULE_TYPE = "daily"
 SCHEDULE_TIME = "00:00"
-DATASET_PATH = r"C:\Users\amans\OneDrive\Documents\moviesdata.xlsx"  # Default path
-DB_CONNECTION_STRING = None
+DATASET_PATH = None
+DB_CONNECTION_STRING = None  # Set if using a database
 
 # Logging setup
 try:
-    os.makedirs(DATA_AUTOMATION_DIR, exist_ok=True)  # Create 'data_automation' directory if not exists
+    os.makedirs(DATA_AUTOMATION_DIR, exist_ok=True)
     logging.basicConfig(filename=LOG_FILE_PATH, level=logging.INFO,
                         format="%(asctime)s - %(levelname)s - %(message)s")
 except OSError as e:
     print(f"Error creating directory or logging: {e}")
     logging.critical(f"Error creating directory or logging: {e}")
-    exit(1)  # Exit the script if directory creation or logging setup fails
+    exit(1)
 
-# Ensure subdirectories exist
-os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)  # Ensure 'processed_data' subdirectory is created
+os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
 os.makedirs(VISUALIZATIONS_DIR, exist_ok=True)
 
 
-def load_data(data_source):
-    """Loads data from a file or database."""
+def load_data(data_source, file_format=None):
+    """Loads data from various file formats or a database."""
     print(f"Loading data from: {data_source}")
     logging.info(f"Loading data from: {data_source}")
     df = None
     try:
         if isinstance(data_source, str) and os.path.exists(data_source):
-            file_extension = os.path.splitext(data_source)[1].lower()
-            if file_extension == ".csv":
+            if not file_format:
+                file_extension = os.path.splitext(data_source)[1].lower()
+                if file_extension in [".csv", ".xlsx", ".xls", ".json"]:
+                    file_format = file_extension.replace(".", "")
+                else:
+                    raise ValueError(f"Unsupported file format: {file_extension}")
+
+            if file_format == "csv":
                 df = pd.read_csv(data_source, low_memory=False)
-            elif file_extension == ".xlsx" or file_extension == ".xls":
+            elif file_format in ["xlsx", "xls"]:
                 df = pd.read_excel(data_source)
-            elif file_extension == ".json":
+            elif file_format == "json":
                 df = pd.read_json(data_source)
             else:
-                logging.error(f"Unsupported file format: {file_extension}")
-                print(f"Unsupported file format: {file_extension}")
-                return None
+                raise ValueError(f"Unsupported file format: {file_format}")
         elif DB_CONNECTION_STRING and isinstance(data_source, str):
             try:
                 engine = sqlalchemy.create_engine(DB_CONNECTION_STRING)
                 df = pd.read_sql_table(data_source, engine)
             except ImportError:
-                logging.error("SQLAlchemy or the database driver is not installed.")
-                print("SQLAlchemy or the database driver is not installed.")
-                return None
+                raise ImportError("SQLAlchemy or database driver not installed.")
             except sqlalchemy.exc.OperationalError as e:
-                logging.error(f"Database connection error: {e}")
-                print(f"Database connection error: {e}")
-                return None
+                raise ConnectionError(f"Database connection error: {e}")
         else:
-            logging.error("Invalid or non-existent data source provided.")
-            print("Invalid or non-existent data source provided.")
-            return None
-        print("File/Data from database Loaded Successfully")
+            raise ValueError("Invalid data source.")
+
+        print("Data loaded successfully.")
         return df
-    except FileNotFoundError:
-        print(f"Error Loading Data: File Not Found at {data_source}")
-        logging.exception(f"Error loading data: File not found {data_source}")
+    except (FileNotFoundError, ValueError, ImportError, ConnectionError) as e:
+        print(f"Error loading data: {e}")
+        logging.error(f"Error loading data: {e}")
         return None
     except Exception as e:
-        print(f"Error Loading Data: {e}")
-        logging.exception(f"Error loading data: {e}")
+        print(f"An unexpected error occurred during data loading: {e}")
+        logging.exception(f"An unexpected error occurred during data loading: {e}")
         return None
 
 def process_data(df):
-    """Processes data."""
+    """Processes data (handles various data types more robustly)."""
     print("Processing Data...")
     logging.info("Processing data...")
     if df is None:
@@ -90,17 +88,20 @@ def process_data(df):
         return None
 
     try:
-        numeric_cols = df.select_dtypes(include=['number']).columns
-        for col in numeric_cols:
-            df.loc[:, col] = df[col].fillna(df[col].mean())
+        if df.empty:
+            print("DataFrame is empty. No processing needed.")
+            return df
 
-        categorical_cols = df.select_dtypes(include=['object', 'category']).columns
-        for col in categorical_cols:
-            try:
-                df[col] = df[col].astype(str)
-                df.loc[:, col] = df[col].fillna(df[col].mode()[0])
-            except (TypeError, IndexError):
-                df.loc[:, col] = df[col].fillna("Missing")
+        for col in df.columns:
+            if pd.api.types.is_numeric_dtype(df[col]):
+                df[col] = df[col].fillna(df[col].mean())
+            elif isinstance(df[col].dtype, pd.CategoricalDtype) or pd.api.types.is_object_dtype(df[col]):
+                df[col] = df[col].astype(str).fillna(df[col].mode()[0] if not df[col].empty else "Missing")
+            elif pd.api.types.is_datetime64_any_dtype(df[col]):
+                df[col] = pd.to_datetime(df[col]).fillna(df[col].mode()[0] if not df[col].empty else pd.Timestamp.min)
+            else:
+                df[col] = df[col].astype(str).fillna("Missing")
+
         print("Data Processing Complete")
         return df
     except Exception as e:
@@ -112,26 +113,32 @@ def visualize_data(df):
     """Generates visualizations."""
     print("Generating Visualizations...")
     logging.info("Generating visualizations...")
-    if df is None:
-        print("No data to visualize.")
-        logging.info("No data to visualize.")
+
+    if df is None or df.empty:
+        print("No data to visualize or DataFrame is empty.")
+        logging.info("No data to visualize or DataFrame is empty.")
         return
 
     try:
         now = datetime.now().strftime("%Y%m%d_%H%M%S")
         num_cols = df.select_dtypes(include=['number']).columns
-        if not num_cols.empty:
-            for col in num_cols:
-                plt.figure(figsize=(10, 6))
-                sns.histplot(df[col])
-                plt.title(f"Distribution of {col}")
-                filepath = os.path.join(VISUALIZATIONS_DIR, f"{col}_hist_{now}.png")
-                plt.savefig(filepath)
-                plt.close()
-
         cat_cols = df.select_dtypes(exclude=['number']).columns
+
+        if num_cols.empty and cat_cols.empty:
+            print("No numeric or categorical columns to visualize.")
+            logging.info("No numeric or categorical columns to visualize.")
+            return
+
+        for col in num_cols:
+            plt.figure(figsize=(10, 6))
+            sns.histplot(df[col])
+            plt.title(f"Distribution of {col}")
+            filepath = os.path.join(VISUALIZATIONS_DIR, f"{col}_hist_{now}.png")
+            plt.savefig(filepath)
+            plt.close()
+
         for col in cat_cols:
-            if 1 <= len(df[col].unique()) <= 20:
+            if 1 <= len(df[col].unique()) <= 20:  # Limit for readability
                 plt.figure(figsize=(10, 6))
                 sns.countplot(x=col, data=df)
                 plt.xticks(rotation=45, ha='right')
@@ -158,10 +165,10 @@ def visualize_data(df):
         print(f"Error During Visualization: {e}")
         logging.error(f"Error during visualization: {e}")
 
-def automate_data_tasks(data_source):
+def automate_data_tasks(data_source, file_format=None):
     """Automates the entire process."""
     print("Starting Data Automation Task")
-    df = load_data(data_source)
+    df = load_data(data_source, file_format)
     if df is not None:
         df = process_data(df)
         if df is not None:
@@ -172,15 +179,15 @@ def automate_data_tasks(data_source):
             logging.info(f"Processed data saved to: {processed_file_path}")
             visualize_data(df)
 
-def schedule_tasks(data_source, schedule_type, schedule_time):
+def schedule_tasks(data_source, schedule_type, schedule_time, file_format=None):
     """Schedules tasks."""
     try:
         if schedule_type == "daily":
-            schedule.every().day.at(schedule_time).do(automate_data_tasks, data_source)
+            schedule.every().day.at(schedule_time).do(automate_data_tasks, data_source, file_format)
         elif schedule_type == "weekly":
-            schedule.every().week.on(0).at(schedule_time).do(automate_data_tasks, data_source)
+            schedule.every().week.on(0).at(schedule_time).do(automate_data_tasks, data_source, file_format)  # 0 is Monday
         elif schedule_type == "monthly":
-            schedule.every(30).days.at(schedule_time).do(automate_data_tasks, data_source)
+            schedule.every(30).days.at(schedule_time).do(automate_data_tasks, data_source, file_format) #Approx monthly
         else:
             raise ValueError("Invalid schedule type.")
 
@@ -202,9 +209,10 @@ def main():
     """Main function."""
     global DATASET_PATH, SCHEDULE_TYPE, SCHEDULE_TIME
     try:
-        DATASET_PATH = input(f"Enter dataset file path (or press Enter for default: {DATASET_PATH}): ") or DATASET_PATH
+        DATASET_PATH = input("Enter dataset file path: ").strip().strip('"')
         if not os.path.exists(DATASET_PATH):
             raise FileNotFoundError(f"File not found: {DATASET_PATH}")
+        file_format = input("Enter file format (csv, xlsx, xls, json or press enter for auto-detect): ").lower() or None
 
         SCHEDULE_TYPE = input(f"Enter schedule type (daily/weekly/monthly, or press Enter for default: {SCHEDULE_TYPE}): ").lower() or SCHEDULE_TYPE
         if SCHEDULE_TYPE not in ("daily", "weekly", "monthly"):
@@ -213,13 +221,10 @@ def main():
         SCHEDULE_TIME = input(f"Enter schedule time (HH:MM, or press Enter for default: {SCHEDULE_TIME}): ") or SCHEDULE_TIME
         datetime.strptime(SCHEDULE_TIME, '%H:%M')
 
-        automate_data_tasks(DATASET_PATH)  # Run once immediately
-        schedule_tasks(DATASET_PATH, SCHEDULE_TYPE, SCHEDULE_TIME)
+        automate_data_tasks(DATASET_PATH, file_format)  # Run once immediately
+        schedule_tasks(DATASET_PATH, SCHEDULE_TYPE, SCHEDULE_TIME, file_format)
 
-    except FileNotFoundError as e:
-        print(str(e))
-        logging.error(str(e))
-    except ValueError as e:
+    except (FileNotFoundError, ValueError) as e:
         print(str(e))
         logging.error(str(e))
     except Exception as e:
