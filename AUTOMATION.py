@@ -93,7 +93,7 @@ class DataScienceAutomation:
             file_extension = os.path.splitext(file_path)[1].lower()
 
             if file_extension == '.csv':
-                self.data = pd.read_csv(file_path, delimiter=',')
+                self.data = pd.read_csv(file_path, delimiter=',' , encoding='ISO-8859-1')
                 logger.info(f"Loaded dataset from CSV file: {file_path}")
             elif file_extension in ['.xlsx', '.xls']:
                 self.data = pd.read_excel(file_path)
@@ -106,7 +106,7 @@ class DataScienceAutomation:
                 logger.info(f"Loaded dataset from Parquet file: {file_path}")
             elif file_extension == '.txt':
                 delimiter = input("Enter delimiter for the text file (e.g., ',' for CSV): ").strip()
-                self.data = pd.read_csv(file_path, delimiter=delimiter)
+                self.data = pd.read_csv(file_path, delimiter=delimiter ,  encoding='ISO-8859-1')
                 logger.info(f"Loaded dataset from text file with delimiter '{delimiter}': {file_path}")
             else:
                 raise ValueError(f"Unsupported file format '{file_extension}'. Supported formats are: CSV, Excel, JSON, Parquet, TXT.")
@@ -149,6 +149,16 @@ class DataScienceAutomation:
             print(f"Error loading file data: {e}")
             raise
 
+    def select_target_column(self):
+        """Select the target column dynamically by checking from the last column backward."""
+        for col in reversed(self.data.columns):
+            if self.data[col].notnull().any():  # Check if column has at least one non-null value
+                logger.info(f"Selected target column: '{col}'")
+                return col
+            else:
+                logger.warning(f"Column '{col}' is completely empty. Skipping.")
+        raise ValueError("No valid column found to set as the target column.")
+
     def process_data(self):
         try:
             logger.info("Processing data...")
@@ -160,21 +170,50 @@ class DataScienceAutomation:
                     self.data[col] = self.data[col].apply(lambda x: self.parse_json_safe(x))
                     logger.info(f"Parsed JSON-like data in column '{col}'.")
 
-            # Handle missing values
-            null_columns = self.data.columns[self.data.isnull().any()]
-            for col in null_columns:
-                if col != self.data.columns[-1]:  # Skip target column
+            # Drop completely missing columns
+            for col in self.data.columns:
+                if self.data[col].isnull().mean() == 1.0:
+                    logger.warning(f"Column '{col}' is completely missing. Dropping column.")
+                    self.data.drop(columns=[col], inplace=True)
+
+            # Dynamically select the target column
+            target_col = self.select_target_column()
+
+            # Encode the target column if it is categorical
+            if self.data[target_col].dtype == 'object':
+                logger.info(f"Encoding target column '{target_col}' using LabelEncoder.")
+                le = LabelEncoder()
+                self.data[target_col] = le.fit_transform(self.data[target_col])
+                self.label_encoders[target_col] = le
+
+            # Handle missing values in non-target columns
+            for col in self.data.columns:
+                if col != target_col and self.data[col].isnull().any():
                     if self.data[col].dtype in ['float64', 'int64']:
-                        self.data[col] = self.data[col].fillna(self.data[col].mean())
+                        self.data[col].fillna(self.data[col].mean(), inplace=True)
                         logger.info(f"Filled missing values in numeric column '{col}' with mean.")
                     elif self.data[col].dtype == 'object':
-                        self.data[col] = self.data[col].fillna(self.data[col].mode()[0])
+                        self.data[col].fillna(self.data[col].mode()[0], inplace=True)
                         logger.info(f"Filled missing values in categorical column '{col}' with mode.")
 
-            target_col = self.data.columns[-1]
+            # Handle missing values in the target column
             if self.data[target_col].isnull().any():
-                logger.warning(f"Target column '{target_col}' contains missing values. Imputing using predictions...")
-                self.impute_missing_target(target_col)
+                missing_ratio = self.data[target_col].isnull().mean()
+                logger.warning(
+                    f"Target column '{target_col}' contains missing values. Missing ratio: {missing_ratio:.2%}")
+
+                if missing_ratio < 0.2:  # Impute values if less than 20% missing
+                    if self.data[target_col].dtype in ['float64', 'int64']:  # Numeric target
+                        self.data.loc[:, target_col] = self.data[target_col].fillna(self.data[target_col].mean())
+                        logger.info(f"Imputed missing values in numeric target column '{target_col}' using mean.")
+                    else:  # Categorical target
+                        self.data.loc[:, target_col] = self.data[target_col].fillna(self.data[target_col].mode()[0])
+                        logger.info(f"Imputed missing values in categorical target column '{target_col}' using mode.")
+                else:  # Drop column or abort based on missing threshold
+                    logger.error(
+                        f"Target column '{target_col}' has too many missing values ({missing_ratio:.2%}). Aborting.")
+                    raise ValueError(
+                        f"Too many missing values in target column '{target_col}' ({missing_ratio:.2%}).")
 
             # Handle datetime columns
             for col in self.data.columns:
@@ -188,27 +227,30 @@ class DataScienceAutomation:
 
             logger.info(f"Column Data Types:\n{self.data.dtypes}")
 
-            # Encode all non-numeric columns (categorical variables)
-            non_numeric_columns = self.data.select_dtypes(include=['object', 'bool']).columns
-            logger.info(f"Non-numeric columns detected for encoding: {non_numeric_columns.tolist()}")
+            # Encode only necessary categorical columns
+            for col in self.data.select_dtypes(include=['object', 'bool']).columns:
+                if col != target_col:  # Skip encoding the target column again
+                    logger.info(f"Encoding categorical column '{col}' using LabelEncoder.")
+                    le = LabelEncoder()
+                    self.data[col] = le.fit_transform(self.data[col].astype(str))
+                    self.label_encoders[col] = le
 
-            for col in non_numeric_columns:
-                logger.info(f"Encoding categorical column '{col}' using LabelEncoder.")
-                le = LabelEncoder()
-                self.data[col] = le.fit_transform(self.data[col].astype(str))
-                self.label_encoders[col] = le
+            # Validate dataset
+            if self.data.empty:
+                raise ValueError("Dataset is empty after processing. Ensure valid input data.")
+            if self.data[target_col].isnull().any():
+                raise ValueError(f"Target column '{target_col}' contains missing values after processing.")
+            logger.info("Data processing complete.")
 
-            # Validate that all features are numeric
-            non_numeric_columns_remaining = [col for col in self.data.columns if
-                                             not pd.api.types.is_numeric_dtype(self.data[col])]
-            if non_numeric_columns_remaining:
-                raise ValueError(f"Non-numeric columns detected after processing: {non_numeric_columns_remaining}")
 
             # Save the processed dataset
             processed_file_path = os.path.join(self.visualization_dir, "processed_dataset.parquet")
             self.data.to_parquet(processed_file_path, index=False)
             self.processed_data = self.data.copy()
             logger.info(f"Processed dataset saved to {processed_file_path}")
+            # Return the selected target column for further processing
+            return target_col
+
         except Exception as e:
             logger.error(f"Error processing data: {e}")
             raise
@@ -350,34 +392,78 @@ class DataScienceAutomation:
             logger.info("Creating dashboard...")
             app = Dash(__name__)
 
-            corr_matrix = self.processed_data.corr()
-            heatmap_fig = px.imshow(corr_matrix, text_auto=True, title="Feature Correlation Heatmap", template="plotly_dark")
-
-            scatter_fig = px.scatter(self.predictions, x="Actual", y="Predicted",
-                                     labels={'Actual': 'True Value', 'Predicted': 'Predicted Value'},
-                                     title="Predictions vs Actual", template="plotly_dark")
-            scatter_fig.add_shape(
-                type="line", line=dict(dash="dash", color="red"),
-                x0=min(self.predictions["Actual"]), x1=max(self.predictions["Actual"]),
-                y0=min(self.predictions["Actual"]), y1=max(self.predictions["Actual"])
+            # 1. Correlation Heatmap for Numeric Features
+            corr_matrix = self.processed_data.select_dtypes(include=['float64', 'int64']).corr()
+            heatmap_fig = px.imshow(
+                corr_matrix,
+                text_auto=True,
+                title="Feature Correlation Heatmap",
+                labels={"color": "Correlation Coefficient"},
+                template="plotly_dark"
             )
 
-            if isinstance(self.model, RandomForestClassifier) or isinstance(self.model, RandomForestRegressor):
-                importances = self.model.feature_importances_
-                feature_names = self.data.columns[:-1]
-                importance_fig = px.bar(x=feature_names, y=importances, labels={'x': 'Feature', 'y': 'Importance'},
-                                        title="Feature Importance", template="plotly_dark")
+            # 2. Predictions vs Actual Scatter Plot (Regression)
+            scatter_fig = px.scatter(
+                self.predictions, x="Actual", y="Predicted",
+                labels={"Actual": "True Value", "Predicted": "Predicted Value"},
+                title="Predictions vs Actual",
+                template="plotly_dark"
+            )
+            scatter_fig.add_shape(
+                type="line",
+                line=dict(dash="dash", color="red"),
+                x0=min(self.predictions["Actual"]),
+                x1=max(self.predictions["Actual"]),
+                y0=min(self.predictions["Actual"]),
+                y1=max(self.predictions["Actual"])
+            )
 
+            # 3. Feature Importance (if available)
+            importance_fig = None
+            if isinstance(self.model, (RandomForestClassifier, RandomForestRegressor)):
+                importances = self.model.feature_importances_
+                feature_names = self.processed_data.columns[:-1]
+                importance_fig = px.bar(
+                    x=feature_names,
+                    y=importances,
+                    labels={"x": "Feature", "y": "Importance Score"},
+                    title="Feature Importance",
+                    template="plotly_dark"
+                )
+
+            # 4. Histograms for Numeric Columns
             histograms = []
             numeric_cols = self.processed_data.select_dtypes(include=['float64', 'int64']).columns
             for column in numeric_cols:
-                hist_fig = px.histogram(self.processed_data, x=column, title=f"Distribution of {column}", template="plotly_dark")
+                hist_fig = px.histogram(
+                    self.processed_data,
+                    x=column,
+                    title=f"Distribution of {column}",
+                    labels={column: column, "count": "Frequency"},
+                    template="plotly_dark"
+                )
                 histograms.append(hist_fig)
 
+            # 5. Bar Plots for Categorical Columns
+            bar_plots = []
+            categorical_cols = self.processed_data.select_dtypes(include=['object', 'category']).columns
+            for column in categorical_cols:
+                bar_fig = px.bar(
+                    self.processed_data[column].value_counts().reset_index(),
+                    x="index",
+                    y=column,
+                    title=f"Frequency of {column}",
+                    labels={"index": column, column: "Count"},
+                    template="plotly_dark"
+                )
+                bar_plots.append(bar_fig)
+
+            # Layout
             app.layout = html.Div([
                 html.H1("Data Science Automation Dashboard", style={'textAlign': 'center'}),
                 html.Div("Welcome to the Data Science Automation Dashboard. Explore insights below."),
 
+                # Model Predictions
                 html.H2("Model Predictions", style={'textAlign': 'center'}),
                 dash_table.DataTable(
                     id='predictions-table',
@@ -388,16 +474,26 @@ class DataScienceAutomation:
                 ),
                 dcc.Graph(figure=scatter_fig),
 
+                # Feature Correlations
                 html.H2("Feature Correlations", style={'textAlign': 'center'}),
                 dcc.Graph(figure=heatmap_fig),
 
+                # Feature Importance
                 html.H2("Feature Importance", style={'textAlign': 'center'}),
-                dcc.Graph(figure=importance_fig if 'importance_fig' in locals() else go.Figure()),
+                dcc.Graph(figure=importance_fig if importance_fig else go.Figure()),
 
+                # Data Distributions
                 html.H2("Data Distributions", style={'textAlign': 'center'}),
                 html.Div([
                     dcc.Graph(figure=hist, style={'display': 'inline-block', 'width': '48%'})
                     for hist in histograms
+                ], style={'textAlign': 'center', 'flexWrap': 'wrap', 'display': 'flex'}),
+
+                # Categorical Feature Frequencies
+                html.H2("Categorical Feature Frequencies", style={'textAlign': 'center'}),
+                html.Div([
+                    dcc.Graph(figure=bar, style={'display': 'inline-block', 'width': '48%'})
+                    for bar in bar_plots
                 ], style={'textAlign': 'center', 'flexWrap': 'wrap', 'display': 'flex'}),
             ])
 
