@@ -40,8 +40,8 @@ pip install -r requirements.txt
 
 Usage
 1. Clone the Repository
-git clone https://github.com/AmanSagarRoy02/Aman-Sagar-Roy.git
-cd DataScienceAutomation
+git clone https://github.com/AmanSagarRoy02/Aman-Sagar-Roy/AUTOMATION.git
+cd AUTOMATION
 
 3. Run the Pipeline
 AUTOMATION.py
