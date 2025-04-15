@@ -36,7 +36,7 @@ The **Data Science Automation Pipeline** is a comprehensive Python-based framewo
   - Implements RandomForest and KNN models.
   - Includes functionality for train/test splitting, stratified splits when possible, and performance evaluation.
   
-- **Advanced Insights & Visualization**  
+- Advanced Insights & Visualization 
   - Generates confusion matrices, residual plots, feature importance charts, SHAP summary plots, partial dependence plots, and decision tree visualizations.
   - Writes model metrics and detailed reports to Excel.
   
@@ -47,7 +47,7 @@ The **Data Science Automation Pipeline** is a comprehensive Python-based framewo
   - Integration with Dash for creating interactive dashboards.
   - Utilities for scheduling tasks and graceful shutdown on receiving system signals.
 
-##Prerequisites
+## Prerequisites
 
 Before running the pipeline, ensure you have the following installed:
 
@@ -66,7 +66,6 @@ Before running the pipeline, ensure you have the following installed:
 
 You can install the necessary libraries with:
 
-bash
 pip install numpy pandas matplotlib seaborn scikit-learn sqlalchemy dash plotly shap schedule
 
 
@@ -75,26 +74,20 @@ pip install numpy pandas matplotlib seaborn scikit-learn sqlalchemy dash plotly 
 ## Installation
 
 1. Clone the Repository:
-
-   bash
-   git clone https://github.com/AmanSagarRoy02
-   cd ds-automation-pipeline
    
+   git clone https://github.com/AmanSagarRoy02/Aman-Sagar-Roy.git
+ 
+   
+3. Create a Virtual Environment (Recommended):
 
-2. Create a Virtual Environment (Recommended):
-
-   bash
    python -m venv venv
    source venv/bin/activate       # On Windows: venv\Scripts\activate
    
 
-3. Install Dependencies:
+4. Install Dependencies:
 
-   bash
    pip install -r requirements.txt
    
-
-   If a `requirements.txt` file is not provided, use the installation command above under prerequisites.
 
 ## Usage
 
@@ -102,14 +95,13 @@ pip install numpy pandas matplotlib seaborn scikit-learn sqlalchemy dash plotly 
 
    Execute the main automation script:
 
-   ```bash
    python AUTOMATION.py
-   ```
+   
 
 2. Data Source Selection:
 
-   - **Local File:** If you choose option 1, the script will prompt for the file path (supporting CSV, Excel, JSON, Parquet, and TXT formats).
-   - **Database:** If you choose option 2, you can connect to a SQLite or SQLAlchemy database and input an SQL query to retrieve the dataset.
+   - Local File: If you choose option 1, the script will prompt for the file path (supporting CSV, Excel, JSON, Parquet, and TXT formats).
+   - Database: If you choose option 2, you can connect to a SQLite or SQLAlchemy database and input an SQL query to retrieve the dataset.
 
 3. Interactive Prompts:
 
@@ -117,7 +109,7 @@ pip install numpy pandas matplotlib seaborn scikit-learn sqlalchemy dash plotly 
    - You can accept the suggested target or provide an alternative column name.
    - During data loading, cleaning, and processing, the tool logs detailed messages to `pipeline.log`.
 
-4. **Model Training and Prediction:
+4. Model Training and Prediction:
 
    - The pipeline builds preprocessing pipelines, applies train/test splits, trains both RandomForest and KNN models, and evaluates performance.
    - It handles both classification and regression tasks based on the target column's data type.
@@ -153,16 +145,16 @@ ds-automation-pipeline/
 
 ## Troubleshooting
 
-- **File Not Found Errors:**  
+- File Not Found Errors: 
   Double-check the file path provided during data source selection.
 
-- **Missing Library Warnings:**  
+- Missing Library Warnings: 
   If SHAP or any other library is not found, install the missing package via pip.
   
-- **Data Processing Issues:**  
+- Data Processing Issues: 
   Check `pipeline.log` for detailed error messages. Ensure your data conforms to expected formats.
 
-- **Performance Issues:**  
+- Performance Issues:  
   For large datasets, consider reducing data size or adjusting model complexity. Detailed logging can help pinpoint bottlenecks.
 
 License
