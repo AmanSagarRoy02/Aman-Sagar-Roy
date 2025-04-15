@@ -1,97 +1,169 @@
-Data Science Automation Pipeline
-This project provides a Data Science Automation Pipeline that simplifies the process of data preprocessing, model training, prediction, and insights generation. It supports datasets from both files and databases, ensuring a robust and scalable workflow.
+# Data Science Automation Pipeline
 
-Features:
-Data Loading: Supports CSV, Excel, and database connections.
+The **Data Science Automation Pipeline** is a comprehensive Python-based framework designed to streamline the processes involved in data ingestion, cleaning, feature engineering, model training, prediction, and advanced visualization. This tool is particularly useful for quickly prototyping machine learning workflows and generating insights from raw datasets using state-of-the-art libraries.
 
-Automatic Data Processing:
-Handles missing values in both target and non-target columns.
-Automatically detects and encodes categorical variables.
-Dynamically selects the target column or allows manual selection.
+## Table of Contents
 
-Model Training and Prediction:
-Automatically detects regression or classification tasks based on the target variable.
-Uses Random Forest as the default model.
+- Features
+- Prerequisites
+- Installation
+- Usage
+- Configuration
+- Project Structure
+- Troubleshooting
+- Contributing
+- License
 
-Insights Generation:
-Provides model performance metrics (e.g., R², Mean Squared Error).
-Generates visualizations for feature importance and predictions.
+## Features
 
-Dashboard:
-Creates an interactive dashboard using Dash for exploring insights.
+- Multiple Data Sources  
+  - Load data from local files (CSV, Excel, JSON, Parquet, TXT) or databases (SQLite, SQLAlchemy).
+  
+- Data Cleaning & Preprocessing  
+  - Automatic handling of missing values, duplicate removal, JSON parsing, and datetime feature extraction.
+  - Dropping of columns or rows based on user-defined thresholds.
+  
+- Target Column Selection  
+  - Auto-detection of the target column using heuristic methods along with manual override.
+  - Encoding for categorical target variables.
 
-Pipeline Scheduling:
-Allows scheduling the pipeline to run at specific intervals (daily, weekly, monthly, or yearly).
+- Feature Engineering  
+  - Automatic clustering of numeric features.
+  - Seamless transformation of categorical and numerical features using a scikit-learn pipeline.
 
-Requirements:
-Python 3.8+
-Required Libraries:
-pandas
-numpy
-sklearn
-plotly
-dash
-sqlalchemy
-schedule
-openpyxl
+- Model Training & Prediction  
+  - Supports both classification and regression tasks.
+  - Implements RandomForest and KNN models.
+  - Includes functionality for train/test splitting, stratified splits when possible, and performance evaluation.
+  
+- **Advanced Insights & Visualization**  
+  - Generates confusion matrices, residual plots, feature importance charts, SHAP summary plots, partial dependence plots, and decision tree visualizations.
+  - Writes model metrics and detailed reports to Excel.
+  
+- Logging & Error Handling  
+  - Robust logging using Python’s `logging` module with detailed error tracing for debugging.
+  
+- Dashboard and Scheduling  
+  - Integration with Dash for creating interactive dashboards.
+  - Utilities for scheduling tasks and graceful shutdown on receiving system signals.
 
-Install dependencies using:
-pip install -r requirements.txt
+##Prerequisites
 
-Usage
-1. Clone the Repository
-git clone https://github.com/AmanSagarRoy02/Aman-Sagar-Roy/AUTOMATION.git
-cd AUTOMATION
+Before running the pipeline, ensure you have the following installed:
 
-3. Run the Pipeline
-AUTOMATION.py
+- Python 3.7+
+- Essential Python packages:
+  - `numpy`
+  - `pandas`
+  - `matplotlib`
+  - `seaborn`
+  - `scikit-learn`
+  - `sqlalchemy`
+  - `dash`
+  - `plotly`
+  - `shap` (optional for SHAP analysis)
+  - Additional packages: `schedule`, `logging`
 
-4. User Input Workflow
-Step 1: Specify the data source type (file or database).
-Step 2: Provide the file path or database connection details.
-Step 3: The pipeline processes the data, trains a model, and generates insights.
-Step 4: Visualize insights through the interactive dashboard.
+You can install the necessary libraries with:
 
-5.Configuration
-Target Column Selection
-The pipeline attempts to auto-detect the target column based on:
-High missing value ratio for the last columns.
-Non-numeric data types for classification.
-Numeric data types for regression.
-Alternatively, specify a manual target column in the code.
+bash
+pip install numpy pandas matplotlib seaborn scikit-learn sqlalchemy dash plotly shap schedule
 
-6.Scheduling
-The pipeline can be scheduled to run at specific intervals:
-Daily
-Weekly
-Monthly
-Yearly
-Configure the scheduling during runtime when prompted.
 
-7.Outputs:
-Processed Dataset: Saved in output/processed_dataset.parquet.
-Predictions: Saved in output/predictions.csv.
-Insights: Saved in output/insights.json.
+> **Note: If you do not plan to use SHAP analysis, the pipeline will continue functioning but will log a warning.
 
-8.Dashboard
-The dashboard provides:
-Feature Correlation Heatmap
-Feature Importance Bar Chart (for Random Forest models)
-Prediction vs. Actual Scatter Plot
-Histograms for Numeric Columns
+## Installation
 
-To access the dashboard:
-After running the pipeline, note the server URL in the logs (default: http://127.0.0.1:8050).
-Open the URL in a web browser.
+1. Clone the Repository:
 
-9.Logging
-The pipeline logs every step to ensure traceability.
-Logs are saved in logs/automation.log.
+   bash
+   git clone https://github.com/AmanSagarRoy02
+   cd ds-automation-pipeline
+   
 
-10.Troubleshooting
-Target Column Error: If the target column is not correctly detected, specify it manually in the code (manual_target_col).
-Missing Values: Ensure missing values in critical columns are handled correctly by the pipeline.
-Dependencies: Verify that all required libraries are installed.
+2. Create a Virtual Environment (Recommended):
+
+   bash
+   python -m venv venv
+   source venv/bin/activate       # On Windows: venv\Scripts\activate
+   
+
+3. Install Dependencies:
+
+   bash
+   pip install -r requirements.txt
+   
+
+   If a `requirements.txt` file is not provided, use the installation command above under prerequisites.
+
+## Usage
+
+1. Run the Pipeline:
+
+   Execute the main automation script:
+
+   ```bash
+   python AUTOMATION.py
+   ```
+
+2. Data Source Selection:
+
+   - **Local File:** If you choose option 1, the script will prompt for the file path (supporting CSV, Excel, JSON, Parquet, and TXT formats).
+   - **Database:** If you choose option 2, you can connect to a SQLite or SQLAlchemy database and input an SQL query to retrieve the dataset.
+
+3. Interactive Prompts:
+
+   - The tool may ask for the target column if not auto-detected.
+   - You can accept the suggested target or provide an alternative column name.
+   - During data loading, cleaning, and processing, the tool logs detailed messages to `pipeline.log`.
+
+4. **Model Training and Prediction:
+
+   - The pipeline builds preprocessing pipelines, applies train/test splits, trains both RandomForest and KNN models, and evaluates performance.
+   - It handles both classification and regression tasks based on the target column's data type.
+
+5. Insights & Visualizations:
+
+   - Visual outputs (e.g., confusion matrix, residual plots, feature importance) are saved in an `output` folder within the project directory.
+   - Metrics are saved as an Excel file (`metrics.xlsx`), and predictions are written to a CSV file (`predictions.csv`).
+
+6. Dashboard Integration:
+
+   - If dashboard features are enabled, launch the interactive dashboard provided by Dash for additional data exploration.
+
+## Configuration
+
+The script can be customized by editing parameters within the source code:
+
+- **Logging:** Adjust log level (INFO, DEBUG) in the `logging.basicConfig` section.
+- **Data Cleaning:** Tweak thresholds for dropping columns/rows, or customize JSON parsing and datetime extraction.
+- **Model Parameters:** Modify hyperparameters for RandomForest and KNN models in the pipeline (e.g., `n_neighbors`, `n_jobs`).
+- **Output Directory:** Change the location where processed data, models, and visualizations are saved by editing the `visualization_dir` variable.
+
+## Project Structure
+
+```
+ds-automation-pipeline/
+├── AUTOMATION.py         # Main automation script
+├── requirements.txt      # List of dependencies (if provided)
+├── pipeline.log          # Log file generated during execution
+├── output/               # Folder where processed data, plots, and metrics are saved
+└── README.md             # This README file
+```
+
+## Troubleshooting
+
+- **File Not Found Errors:**  
+  Double-check the file path provided during data source selection.
+
+- **Missing Library Warnings:**  
+  If SHAP or any other library is not found, install the missing package via pip.
+  
+- **Data Processing Issues:**  
+  Check `pipeline.log` for detailed error messages. Ensure your data conforms to expected formats.
+
+- **Performance Issues:**  
+  For large datasets, consider reducing data size or adjusting model complexity. Detailed logging can help pinpoint bottlenecks.
 
 License
 This project is licensed under the MIT License.(https://github.com/users/AmanSagarRoy02/projects/LICENSE)
