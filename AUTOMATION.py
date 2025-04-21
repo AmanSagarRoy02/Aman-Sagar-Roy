@@ -18,6 +18,7 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from sklearn.cluster import KMeans
 from sklearn.metrics import (accuracy_score, classification_report, mean_squared_error,r2_score, confusion_matrix)
+import warnings
 
 try:
     from sklearn.inspection import PartialDependenceDisplay
@@ -37,7 +38,7 @@ import logging
 from sklearn.tree import plot_tree
 import base64
 import threading
-
+import datetime
 
 try:
     import shap
@@ -2254,55 +2255,122 @@ class DataScienceAutomation:
     # =================== Scheduling & Pipeline ===================
 
     def schedule_pipeline(self, task_type=None):
-        """ Allows user to schedule daily runs of the pipeline. """
+        """ Allows user to schedule runs of the pipeline with daily, weekly, or monthly frequency. """
         try:
             while True:
-                choice = input("\nDo you want to schedule the pipeline for daily runs? (yes/no): ").strip().lower()
-                if choice.startswith('y'):
-                    schedule_time = input(
-                        "Enter time to run daily (HH:MM, 24-hr format, e.g., 08:30 or 23:00): ").strip()
-                    try:
-                        # Validate time format
-                        time.strptime(schedule_time, '%H:%M')
-                    except ValueError:
-                        print("Invalid time format. Please use HH:MM (e.g., 14:00).")
-                        continue  # Ask again
-
-                    # Define the job to run
-                    def job():
-                        self.scheduler_logger.info("--- Scheduled Pipeline Run Starting ---")
-                        try:
-                            # Re-run the pipeline: reload data, re-process, re-train
-                            # Don't start a *new* dashboard each time
-                            self.run_pipeline(start_dashboard=False, task_type=task_type,
-                                              reload_data=True)  # Reload data for scheduled runs
-                            self.scheduler_logger.info("--- Scheduled Pipeline Run Completed Successfully ---")
-                        except Exception as e:
-                            self.scheduler_logger.error(f"--- Scheduled Pipeline Run Failed: {e} ---", exc_info=True)
-
-                    # Schedule the job
-                    schedule.every().day.at(schedule_time).do(job)
-                    self.scheduler_logger.info(f"Pipeline scheduled to run daily at {schedule_time}.")
-                    print(f"\nPipeline scheduled daily at {schedule_time}.")
-                    print("Scheduler is running in the background. Press Ctrl+C to stop the scheduler.")
-
-                    # Keep the script running to allow the scheduler to work
-                    while True:
-                        schedule.run_pending()
-                        time.sleep(60)  # Check every minute
-
-                elif choice.startswith('n'):
+                schedule_choice = input(
+                    "\nDo you want to schedule the pipeline for future runs? (yes/no): ").strip().lower()
+                if schedule_choice.startswith('y'):
+                    break  # Proceed to frequency selection
+                elif schedule_choice.startswith('n'):
                     self.scheduler_logger.info("User chose not to schedule the pipeline.")
                     print("Pipeline will not be scheduled.")
-                    break  # Exit the scheduling setup loop
+                    return  # Exit the scheduling method
                 else:
                     print("Invalid input. Please type 'yes' or 'no'.")
+
+            # --- Frequency Selection ---
+            while True:
+                schedule_frequency = input("Enter scheduling frequency (daily/weekly/monthly): ").strip().lower()
+                if schedule_frequency in ['daily', 'weekly', 'monthly']:
+                    break
+                else:
+                    print("Invalid frequency. Please enter 'daily', 'weekly', or 'monthly'.")
+
+            # --- Time Input ---
+            while True:
+                schedule_time = input(
+                    f"Enter time for {schedule_frequency} run (HH:MM, 24-hr format, e.g., 08:30 or 23:00): ").strip()
+                try:
+                    # Validate time format
+                    time.strptime(schedule_time, '%H:%M')
+                    break  # Valid time format
+                except ValueError:
+                    print("Invalid time format. Please use HH:MM (e.g., 14:00).")
+
+            # --- Define the core job ---
+            def job():
+                self.scheduler_logger.info(f"--- Scheduled {schedule_frequency.upper()} Pipeline Run Starting ---")
+                try:
+                    # Re-run the pipeline: reload data, re-process, re-train
+                    # Don't start a *new* dashboard each time
+                    self.run_pipeline(start_dashboard=False, task_type=task_type,
+                                      reload_data=True)  # Reload data for scheduled runs
+                    self.scheduler_logger.info(
+                        f"--- Scheduled {schedule_frequency.upper()} Pipeline Run Completed Successfully ---")
+                except Exception as e:
+                    self.scheduler_logger.error(
+                        f"--- Scheduled {schedule_frequency.upper()} Pipeline Run Failed: {e} ---", exc_info=True)
+
+            # --- Schedule based on frequency ---
+            scheduled_message = ""
+            if schedule_frequency == 'daily':
+                schedule.every().day.at(schedule_time).do(job)
+                scheduled_message = f"Pipeline scheduled to run DAILY at {schedule_time}."
+
+            elif schedule_frequency == 'weekly':
+                days_of_week = {
+                    "monday": schedule.every().monday,
+                    "tuesday": schedule.every().tuesday,
+                    "wednesday": schedule.every().wednesday,
+                    "thursday": schedule.every().thursday,
+                    "friday": schedule.every().friday,
+                    "saturday": schedule.every().saturday,
+                    "sunday": schedule.every().sunday
+                }
+                while True:
+                    schedule_day_of_week = input(
+                        f"Enter day of the week for weekly run ({', '.join(days_of_week.keys())}): ").strip().lower()
+                    if schedule_day_of_week in days_of_week:
+                        days_of_week[schedule_day_of_week].at(schedule_time).do(job)
+                        scheduled_message = f"Pipeline scheduled to run WEEKLY every {schedule_day_of_week.capitalize()} at {schedule_time}."
+                        break
+                    else:
+                        print(f"Invalid day. Please enter one of: {', '.join(days_of_week.keys())}")
+
+            elif schedule_frequency == 'monthly':
+                while True:
+                    try:
+                        schedule_day_of_month = int(input("Enter day of the month for monthly run (1-31): ").strip())
+                        if 1 <= schedule_day_of_month <= 31:
+                            break
+                        else:
+                            print("Invalid day. Please enter a number between 1 and 31.")
+                    except ValueError:
+                        print("Invalid input. Please enter a number.")
+
+                # Workaround for monthly scheduling with the 'schedule' library:
+                # Schedule a daily check and run the job only on the target day.
+                def monthly_job_wrapper():
+                    today = datetime.date.today()
+                    if today.day == schedule_day_of_month:
+                        self.scheduler_logger.info(f"Today is day {schedule_day_of_month}, executing monthly job.")
+                        job()  # Execute the actual pipeline job
+                    else:
+                        self.scheduler_logger.debug(
+                            f"Skipping monthly job. Today is day {today.day}, target is {schedule_day_of_month}.")
+
+                schedule.every().day.at(schedule_time).do(monthly_job_wrapper)
+                scheduled_message = f"Pipeline scheduled to run MONTHLY on day {schedule_day_of_month} at {schedule_time}."
+                print(
+                    f"(Note: For monthly runs on day {schedule_day_of_month}, the job will not run in months without that day, e.g., day 31 in February).")
+
+            # --- Log and start scheduler loop ---
+            self.scheduler_logger.info(scheduled_message)
+            print(f"\n{scheduled_message}")
+            print("Scheduler is running in the background. Press Ctrl+C to stop the scheduler.")
+
+            # Keep the script running to allow the scheduler to work
+            while True:
+                schedule.run_pending()
+                time.sleep(60)  # Check every minute
 
         except KeyboardInterrupt:
             self.scheduler_logger.info("Scheduler stopped by user (Ctrl+C).")
             print("\nScheduler stopped.")
         except Exception as e:
             self.scheduler_logger.error(f"An error occurred in the scheduling setup: {e}", exc_info=True)
+            print(f"\nError during scheduling setup: {e}")
             # Don't raise here, allow main program flow to potentially continue or exit gracefully
 
     def run_pipeline(self, start_dashboard=True, task_type=None, reload_data=True):
@@ -2371,8 +2439,6 @@ class DataScienceAutomation:
 
 # =================== Main Execution Block ===================
 if __name__ == "__main__":
-    # Add import for warnings at the top if not already there
-    import warnings
 
     automation = None  # Initialize to None
     try:
