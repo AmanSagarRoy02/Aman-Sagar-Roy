@@ -1,10 +1,9 @@
 import os
-import numpy as np
 import pandas as pd
 import sqlite3
 import traceback  # Import traceback for detailed error logging
 import matplotlib
-
+import numpy as np
 matplotlib.use('agg')  # For non-GUI environments
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -2479,6 +2478,7 @@ class DataScienceAutomation:
             metric_label = "Metric"
             plot_title = "Performance Plot"
             perf_img = None
+            bullet_charts = []  # Initialize list for bullet charts
 
             if self.task_type == 'classification':
                 rf_metric = accuracy_score(self.y_test, self.predictions_rf_test)
@@ -2486,13 +2486,101 @@ class DataScienceAutomation:
                 metric_label = "Accuracy"
                 plot_title = "Confusion Matrix (Random Forest)"
                 perf_img = confusion_matrix_img
-            elif self.task_type == 'regression':  # Use elif for clarity
+                self.pipeline_logger.info("Task is classification, skipping bullet charts.")
+
+            elif self.task_type == 'regression':
                 rf_metric = r2_score(self.y_test, self.predictions_rf_test)
                 knn_metric = r2_score(self.y_test, self.predictions_knn_test)
-                metric_label = "R2 Score"  # Corrected label
+                metric_label = "R2 Score"
                 plot_title = "Residual Plot (Random Forest)"
                 perf_img = residual_plot_img
-            # --- End of metric calculation ---
+
+                # --- START: Bullet Chart Generation for Regression ---
+                self.pipeline_logger.info("Task is regression, generating bullet charts for average performance.")
+                try:
+                    # Use nanmean for robustness against potential NaNs
+                    mean_actual = np.nanmean(self.y_test)
+                    mean_pred_rf = np.nanmean(self.predictions_rf_test)
+                    mean_pred_knn = np.nanmean(self.predictions_knn_test)
+
+                    # Determine a reasonable range for the gauge axis
+                    all_vals = np.concatenate([
+                        self.y_test.values.flatten(),  # Use .values for Series
+                        self.predictions_rf_test.flatten(),
+                        self.predictions_knn_test.flatten()
+                    ])
+                    min_val = np.nanmin(all_vals)
+                    max_val = np.nanmax(all_vals)
+                    padding = (max_val - min_val) * 0.1  # Add 10% padding
+                    gauge_range = [min_val - padding, max_val + padding]
+
+                    # Create RF Bullet Chart
+                    fig_bullet_rf = go.Figure(go.Indicator(
+                        mode="gauge+number+delta",
+                        value=mean_pred_rf,
+                        delta={'reference': mean_actual, 'relative': False, 'valueformat': '.3f'},
+                        title={'text': "Avg. Predicted (RF) vs. Avg. Actual", 'font': {'size': 16}},
+                        number={'valueformat': '.3f'},
+                        gauge={
+                            'axis': {'range': gauge_range, 'tickwidth': 1, 'tickcolor': "darkblue"},
+                            'bar': {'color': "#1f77b4"},  # Plotly blue
+                            'bgcolor': "white",
+                            'borderwidth': 2,
+                            'bordercolor': "gray",
+                            'steps': [
+                                # Optional: Add steps/ranges if desired, e.g., +/- std dev
+                                # {'range': [mean_actual - std_actual, mean_actual + std_actual], 'color': 'lightgray'}
+                            ],
+                            'threshold': {
+                                'line': {'color': "red", 'width': 3},
+                                'thickness': 0.75,
+                                'value': mean_actual  # Target line at average actual
+                            }
+                        }
+                    ))
+                    fig_bullet_rf.update_layout(height=250,
+                                                margin={'t': 50, 'b': 50, 'l': 50, 'r': 50})  # Adjust layout
+
+                    # Create KNN Bullet Chart
+                    fig_bullet_knn = go.Figure(go.Indicator(
+                        mode="gauge+number+delta",
+                        value=mean_pred_knn,
+                        delta={'reference': mean_actual, 'relative': False, 'valueformat': '.3f'},
+                        title={'text': "Avg. Predicted (KNN) vs. Avg. Actual", 'font': {'size': 16}},
+                        number={'valueformat': '.3f'},
+                        gauge={
+                            'axis': {'range': gauge_range, 'tickwidth': 1, 'tickcolor': "darkblue"},
+                            'bar': {'color': "#ff7f0e"},  # Plotly orange
+                            'bgcolor': "white",
+                            'borderwidth': 2,
+                            'bordercolor': "gray",
+                            'steps': [],  # Optional steps
+                            'threshold': {
+                                'line': {'color': "red", 'width': 3},
+                                'thickness': 0.75,
+                                'value': mean_actual  # Target line at average actual
+                            }
+                        }
+                    ))
+                    fig_bullet_knn.update_layout(height=250,
+                                                 margin={'t': 50, 'b': 50, 'l': 50, 'r': 50})  # Adjust layout
+
+                    # Add charts to the layout
+                    bullet_charts = [
+                        html.Div([
+                            html.H4("Average Performance Overview (Regression)", style={'textAlign': 'center'}),
+                            html.Div(dcc.Graph(id='bullet-rf', figure=fig_bullet_rf),
+                                     style={'width': '48%', 'display': 'inline-block'}),
+                            html.Div(dcc.Graph(id='bullet-knn', figure=fig_bullet_knn),
+                                     style={'width': '48%', 'display': 'inline-block', 'marginLeft': '4%'})
+                        ], style={'marginTop': '20px', 'marginBottom': '20px'})
+                    ]
+                    self.pipeline_logger.info("Successfully generated bullet charts.")
+
+                except Exception as bullet_err:
+                    self.pipeline_logger.error(f"Failed to generate bullet charts: {bullet_err}", exc_info=True)
+                    bullet_charts = [html.P(f"Error generating bullet charts: {bullet_err}")]
+                # --- END: Bullet Chart Generation ---
 
             # Scatter plots for predictions vs actual
             scatter_plots = html.P("Could not generate prediction scatter plots.")
@@ -2526,16 +2614,17 @@ class DataScienceAutomation:
                 html.Div([
                     html.H4("RandomForest Model"),
                     html.P(f"{metric_label}: {rf_metric:.4f}" if rf_metric is not None else "N/A")
-                    # Use calculated rf_metric
                 ], style={'width': '45%', 'display': 'inline-block', 'border': '1px solid #ddd', 'padding': '10px',
                           'margin': '10px', 'verticalAlign': 'top', 'textAlign': 'center'}),
                 html.Div([
                     html.H4("KNN Model"),
                     html.P(f"{metric_label}: {knn_metric:.4f}" if knn_metric is not None else "N/A")
-                    # Use calculated knn_metric
                 ], style={'width': '45%', 'display': 'inline-block', 'border': '1px solid #ddd', 'padding': '10px',
                           'margin': '10px', 'verticalAlign': 'top', 'textAlign': 'center'})
             ])
+
+            # Add bullet charts (if generated) to the children list
+            perf_children.extend(bullet_charts)  # Add the bullet chart Div here
 
             perf_children.extend([
                 performance_summary,
