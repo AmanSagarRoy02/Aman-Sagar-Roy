@@ -4,20 +4,21 @@ import pandas as pd
 import sqlite3
 import traceback  # Import traceback for detailed error logging
 import matplotlib
+
 matplotlib.use('agg')  # For non-GUI environments
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sqlalchemy import create_engine
 import dash
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, LabelEncoder, OneHotEncoder
+from sklearn.preprocessing import StandardScaler, LabelEncoder, OneHotEncoder, FunctionTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from sklearn.cluster import KMeans
-from sklearn.metrics import (accuracy_score, classification_report, mean_squared_error,r2_score, confusion_matrix)
+from sklearn.metrics import (accuracy_score, classification_report, mean_squared_error, r2_score, confusion_matrix)
 import warnings
 
 try:
@@ -26,12 +27,14 @@ except ImportError:
     print("Warning: PartialDependenceDisplay not found. PDP plots will be unavailable. Check scikit-learn version.")
     PartialDependenceDisplay = None  # Define as None if import fails
 
+import plotly
 import plotly.express as px
 import plotly.graph_objs as go
 from dash import Dash, dcc, html, dash_table, Input, Output
 import json
 import schedule
 import time
+import datetime
 import signal
 import sys
 import logging
@@ -49,8 +52,9 @@ except ImportError:
     shap_available = False
     shap = None  # Define as None if import fails
 
-from pandas.api.types import is_categorical_dtype, is_numeric_dtype, is_datetime64_any_dtype, is_object_dtype, \
+from pandas.api.types import is_numeric_dtype, is_datetime64_any_dtype, is_object_dtype, \
     is_integer_dtype
+from pandas import CategoricalDtype
 
 # Configure logging
 # Remove existing handlers before adding new ones to prevent duplicate logs
@@ -112,6 +116,17 @@ class DataScienceAutomation:
         os.makedirs(self.visualization_dir, exist_ok=True)
         self.cluster_analysis_df = None
         # self.scaler = StandardScaler() # Scaler is part of the pipeline now
+
+        # --- NEW: Data source parameters for automatic reloading ---
+        self.data_source_type = None  # 'file' or 'database'
+        self.file_path = None  # Path to the data file
+        self.file_type = None  # Extension of the file (e.g., '.csv')
+        self.file_delimiter = None  # For text files
+        self.db_connection_string = None  # For database connections (path for sqlite, string for sqlalchemy)
+        self.db_query = None  # SQL query for database loading
+        self.db_type = None  # 'sqlite' or 'sqlalchemy'
+        # --- End NEW ---
+
         self.pipeline_logger.info("DataScienceAutomation initialized")
         self.dashboard_running = False  # Flag to track dashboard status
 
@@ -149,6 +164,7 @@ class DataScienceAutomation:
 
                 ext = os.path.splitext(file_path)[1].lower()
                 self.pipeline_logger.info(f"Attempting to load file: {file_path} (type: {ext})")
+                delimiter = None  # Initialize delimiter for this scope
 
                 if ext == '.csv':
                     # Try common encodings
@@ -188,6 +204,18 @@ class DataScienceAutomation:
 
                 self.pipeline_logger.info(
                     f"Successfully loaded data from {file_path}. Initial shape: {self.data.shape}")
+
+                # --- Store parameters for automatic reload ---
+                self.data_source_type = 'file'
+                self.file_path = file_path
+                self.file_type = ext
+                self.file_delimiter = delimiter if ext == '.txt' else None  # Store delimiter only if txt
+                self.db_connection_string = None  # Clear DB params if loading file
+                self.db_query = None
+                self.db_type = None
+                self.pipeline_logger.info(
+                    f"Stored file source parameters for future reloads: path={self.file_path}, type={self.file_type}")
+                # --- End Store parameters ---
 
                 # --- Initial Data Cleaning ---
                 # Drop columns with >80% missing values
@@ -231,9 +259,10 @@ class DataScienceAutomation:
                 raise  # Re-raise unexpected errors
 
     def load_database(self):
-        # (Keep the database loading logic as it was, assuming it works or is not the primary issue)
         try:
             db_type = input("Enter the database type ('sqlite' or 'sqlalchemy'): ").strip().lower()
+            db_path = None  # Initialize
+            conn_string = None  # Initialize
             if db_type == 'sqlite':
                 db_path = input("SQLite File Path: ").strip().strip('"').strip("'")
                 conn = sqlite3.connect(db_path)
@@ -245,11 +274,43 @@ class DataScienceAutomation:
                 engine = create_engine(conn_string)
                 query = input("SQL Query: ").strip()
                 self.data = pd.read_sql_query(query, engine)
+                # Dispose engine? Maybe not necessary for read-only?
+                # engine.dispose()
             else:
                 raise ValueError("Unsupported database type. Please enter 'sqlite' or 'sqlalchemy'.")
 
             if self.data is None or self.data.empty:
                 raise ValueError("Loaded DataFrame from database is empty or None.")
+
+            # --- Store parameters for automatic reload ---
+            self.data_source_type = 'database'
+            self.db_connection_string = db_path if db_type == 'sqlite' else conn_string  # Store relevant connection info
+            self.db_query = query
+            self.db_type = db_type  # Store 'sqlite' or 'sqlalchemy'
+            self.file_path = None  # Clear file params if loading DB
+            self.file_type = None
+            self.file_delimiter = None
+            self.pipeline_logger.info(f"Stored database source parameters for future reloads: type={self.db_type}")
+            # --- End Store parameters ---
+
+            # --- Initial Cleaning (Same as load_file) ---
+            initial_cols = self.data.shape[1]
+            missing_threshold = 0.8
+            high_missing_cols = self.data.columns[self.data.isnull().mean() > missing_threshold]
+            if not high_missing_cols.empty:
+                self.pipeline_logger.warning(
+                    f"Dropping columns with >{missing_threshold * 100:.1f}% missing values: {list(high_missing_cols)}")
+                self.data.drop(columns=high_missing_cols, inplace=True)
+
+            initial_rows = self.data.shape[0]
+            self.data.dropna(axis=0, how='all', inplace=True)
+            if self.data.shape[0] < initial_rows:
+                self.pipeline_logger.info(
+                    f"Dropped {initial_rows - self.data.shape[0]} fully empty rows.")
+
+            if self.data.empty:
+                raise ValueError("Data became empty after initial cleaning.")
+
             self.original_data = self.data.copy()
             self.pipeline_logger.info(f"Dataset loaded from database; shape: {self.data.shape}")
             print("\n--- Data Loaded Successfully ---")
@@ -261,6 +322,113 @@ class DataScienceAutomation:
             self.pipeline_logger.error(f"Error loading database data: {e}", exc_info=True)
             print(f"\nAn error occurred loading from database: {e}. Check logs.")
             raise
+
+    def _reload_data_automatically(self):
+        """ Loads data non-interactively using stored parameters. """
+        self.pipeline_logger.info(f"--- Starting Automatic Data Reload (Source Type: {self.data_source_type}) ---")
+        if self.data_source_type == 'file' and self.file_path:
+            try:
+                file_path = self.file_path
+                ext = self.file_type
+                delimiter = self.file_delimiter
+                self.pipeline_logger.info(f"Attempting to auto-reload file: {file_path} (type: {ext})")
+
+                if not os.path.exists(file_path):
+                    raise FileNotFoundError(f"Automatic reload failed: File not found at stored path: {file_path}")
+
+                if ext == '.csv':
+                    try:
+                        self.data = pd.read_csv(file_path)
+                    except UnicodeDecodeError:
+                        self.pipeline_logger.warning("UTF-8 decoding failed during auto-reload, trying ISO-8859-1...")
+                        self.data = pd.read_csv(file_path, encoding='ISO-8859-1')
+                elif ext in ['.xlsx', '.xls']:
+                    self.data = pd.read_excel(file_path)
+                elif ext == '.json':
+                    self.data = pd.read_json(file_path)
+                elif ext == '.parquet':
+                    self.data = pd.read_parquet(file_path)
+                elif ext == '.txt':
+                    if delimiter is None:  # Should have been stored, but default if missing
+                        self.pipeline_logger.warning("Delimiter not stored for TXT auto-reload, defaulting to ','.")
+                        delimiter = ','
+                    try:
+                        self.data = pd.read_csv(file_path, delimiter=delimiter)
+                    except UnicodeDecodeError:
+                        self.pipeline_logger.warning("UTF-8 decoding failed for TXT auto-reload, trying ISO-8859-1...")
+                        self.data = pd.read_csv(file_path, delimiter=delimiter, encoding='ISO-8859-1')
+                else:
+                    # This shouldn't happen if parameters were stored correctly
+                    raise ValueError(f"Unsupported file type '{ext}' encountered during auto-reload.")
+
+                if self.data is None or self.data.empty:
+                    raise ValueError("Auto-reloaded data is empty. Check the source file.")
+
+                self.pipeline_logger.info(f"Successfully auto-reloaded data from {file_path}. Shape: {self.data.shape}")
+
+            except Exception as e:
+                self.pipeline_logger.error(f"Automatic file reload failed: {e}", exc_info=True)
+                raise  # Re-raise to stop the scheduled job
+
+        elif self.data_source_type == 'database' and self.db_connection_string and self.db_query:
+            try:
+                db_type = self.db_type
+                conn_string_or_path = self.db_connection_string
+                query = self.db_query
+                self.pipeline_logger.info(f"Attempting to auto-reload from database (type: {db_type})")
+
+                if db_type == 'sqlite':
+                    conn = sqlite3.connect(conn_string_or_path)
+                    self.data = pd.read_sql_query(query, conn)
+                    conn.close()
+                elif db_type == 'sqlalchemy':
+                    engine = create_engine(conn_string_or_path)
+                    self.data = pd.read_sql_query(query, engine)
+                    # Dispose engine? Maybe not necessary for read-only?
+                    # engine.dispose()
+                else:
+                    raise ValueError(f"Unsupported database type '{db_type}' encountered during auto-reload.")
+
+                if self.data is None or self.data.empty:
+                    raise ValueError("Auto-reloaded data from database is empty.")
+
+                self.pipeline_logger.info(f"Successfully auto-reloaded data from database. Shape: {self.data.shape}")
+
+            except Exception as e:
+                self.pipeline_logger.error(f"Automatic database reload failed: {e}", exc_info=True)
+                raise  # Re-raise to stop the scheduled job
+        else:
+            msg = "Cannot reload data automatically: Data source parameters not set or invalid."
+            self.pipeline_logger.error(msg)
+            raise ValueError(msg)  # Stop the scheduled job
+
+        # --- Apply Initial Cleaning (same as in load_file) ---
+        # !!! CORRECTED INDENTATION STARTS HERE !!!
+        try:
+            initial_cols = self.data.shape[1]
+            missing_threshold = 0.8
+            high_missing_cols = self.data.columns[self.data.isnull().mean() > missing_threshold]
+            if not high_missing_cols.empty:
+                self.pipeline_logger.warning(
+                    f"(Auto-reload) Dropping columns with >{missing_threshold * 100:.1f}% missing values: {list(high_missing_cols)}")
+                self.data.drop(columns=high_missing_cols, inplace=True)
+
+            initial_rows = self.data.shape[0]
+            self.data.dropna(axis=0, how='all', inplace=True)
+            if self.data.shape[0] < initial_rows:
+                self.pipeline_logger.info(
+                    f"(Auto-reload) Dropped {initial_rows - self.data.shape[0]} fully empty rows.")
+
+            if self.data.empty:
+                raise ValueError("Data became empty after initial cleaning during auto-reload.")
+
+            self.original_data = self.data.copy()  # IMPORTANT: Update original_data after successful auto-reload
+            self.pipeline_logger.info(f"Automatic data reload and initial cleaning complete. Shape: {self.data.shape}")
+
+        except Exception as clean_err:
+            self.pipeline_logger.error(f"Error during initial cleaning after auto-reload: {clean_err}", exc_info=True)
+            raise  # Re-raise cleaning errors
+        # !!! CORRECTED INDENTATION ENDS HERE !!!
 
     # =================== Utility / Internal Methods ===================
 
@@ -295,7 +463,10 @@ class DataScienceAutomation:
             # Increased threshold slightly, maybe < 5% unique and < 100 unique values?
             if unique_ratio < 0.05 and n_unique < 100:
                 # Further check: if all values are integers, more likely classification
-                if pd.api.types.is_integer_dtype(y) or (y.dropna() == y.dropna().astype(int)).all():
+                # Check for NaN before attempting conversion to int
+                y_dropna = y.dropna()
+                if not y_dropna.empty and (
+                        pd.api.types.is_integer_dtype(y) or (y_dropna == y_dropna.astype(int)).all()):
                     self.pipeline_logger.info(
                         f"Detected numeric target '{y.name}' with low cardinality ({n_unique} unique, int-like) as classification.")
                     return 'classification'
@@ -435,7 +606,8 @@ class DataScienceAutomation:
                 if new_col in df.columns and df[new_col].isnull().any():
                     # Impute with median for numeric extracted features
                     impute_val = df[new_col].median()
-                    df[new_col].fillna(impute_val, inplace=True)
+                    # Fix FutureWarning by avoiding chained assignment with inplace=True
+                    df[new_col] = df[new_col].fillna(impute_val)
                     self.pipeline_logger.info(
                         f"Imputed NaNs in extracted datetime feature '{new_col}' with median {impute_val}")
 
@@ -455,11 +627,16 @@ class DataScienceAutomation:
 
     # =================== Data Processing Methods ===================
 
-    def process_data(self, manual_target_col=None):
+
+    def process_data(self, manual_target_col=None, is_initial_run=False):  # Add is_initial_run here
         """
-        Processes the loaded data: handles duplicates, JSON, datetime, missing values,
-        target selection, encoding, and feature engineering (clustering).
-        """
+            Processes the loaded data: handles duplicates, JSON, datetime, missing values,
+            target selection, encoding, and feature engineering (clustering).
+
+            Args:
+                manual_target_col (str, optional): Manually specified target column for this run.
+                is_initial_run (bool): Flag indicating if this is the very first execution.
+            """
         try:
             self.pipeline_logger.info("--- Starting Data Processing ---")
             if self.original_data is None:
@@ -541,40 +718,139 @@ class DataScienceAutomation:
 
             self.pipeline_logger.info(f"Shape after datetime processing: {self.data.shape}")
 
+
             # --- Target Column Handling ---
             # 3. Identify Target Column
             try:
-                # Use manual target if provided and valid
-                if manual_target_col and manual_target_col in self.data.columns:
-                    self.target_col = manual_target_col
-                    self.pipeline_logger.info(f"Using provided target column: {self.target_col}")
+                target_to_use = None  # Initialize variable to hold the target for this run
+
+                # --- Initial Run Logic ---
+                if is_initial_run:
+                    self.pipeline_logger.info("Initial run: Forcing interactive target column selection.")
+                    print("\n--- Target Column Selection (Initial Run) ---")
+                    print("This is the first run. Please select the target column.")
+                    available_columns = self.data.columns.tolist()
+                    for i, col in enumerate(available_columns, start=1):
+                        print(f"{i}. {col}")
+
+                    suggested_target = None
+                    try:
+                        suggested_target = self.select_target_column()
+                        print(f"\nSuggested target based on analysis: '{suggested_target}'")
+                        # Prompt message will be set inside the loop now
+                    except ValueError as e:
+                        self.pipeline_logger.warning(f"Auto-detection failed during initial prompt: {e}")
+                        # Prompt message will be set inside the loop now
+
+                    # --- Start of Replacement for Initial Run Prompt Loop ---
+                    while True:
+                        # Adjust prompt based on whether a suggestion exists
+                        if suggested_target:
+                            prompt_msg = f"Enter target column name (or press Enter for '{suggested_target}'): "
+                        else:
+                            prompt_msg = "Enter the exact target column name (required): "
+
+                        user_input = input(prompt_msg).strip()
+
+                        if not user_input:  # User pressed Enter
+                            if suggested_target:
+                                target_to_use = suggested_target
+                                self.pipeline_logger.info(f"User accepted suggested target for initial run: {target_to_use}")
+                                break  # Exit loop
+                            else:
+                                # No suggestion available, Enter is not valid
+                                print("Error: Input is required as no suggestion could be made. Please enter a valid column name.")
+                                # Loop continues
+                        elif user_input in self.data.columns:  # User typed a valid column name
+                            target_to_use = user_input
+                            self.pipeline_logger.info(f"User selected target column for initial run: {target_to_use}")
+                            break  # Exit loop
+                        else:  # User typed something, but it's not a valid column
+                            print(f"Error: Column '{user_input}' not found. Please choose from the list above or check spelling.")
+                            # Loop continues
+                    # --- End of Replacement for Initial Run Prompt Loop ---
+
+                # --- Subsequent Run Logic ---
+                else:  # Not the initial run
+                    self.pipeline_logger.info("Subsequent run: Checking for stored target column.")
+                    # Priority 1: Use manually provided target for this specific run (if any)
+                    if manual_target_col and manual_target_col in self.data.columns:
+                        target_to_use = manual_target_col
+                        self.pipeline_logger.info(f"Using provided manual target column for this run: {target_to_use}")
+                    # Priority 2: Use previously stored target if it's still valid
+                    elif self.target_col and self.target_col in self.data.columns:
+                        target_to_use = self.target_col
+                        self.pipeline_logger.info(f"Using previously stored target column: {target_to_use}")
+                    # Priority 3: Stored target is invalid or missing, proceed to auto-detect/prompt
+                    else:
+                        if self.target_col and self.target_col not in self.data.columns:
+                            self.pipeline_logger.warning(
+                                f"Previously stored target '{self.target_col}' not found in current data. Re-detecting.")
+                        else:  # self.target_col was None or never set
+                            self.pipeline_logger.info("No valid stored target found. Proceeding with auto-detection.")
+
+                        # Auto-detect a suggestion
+                        auto_target = self.select_target_column()  # May raise ValueError if fails
+                        self.pipeline_logger.info(f"Auto-selected target column candidate: {auto_target}")
+
+                        # Check if interactive for prompting
+                        is_interactive = sys.stdin.isatty()
+                        if is_interactive:
+                            print(f"\n--- Target Column Selection ---")
+                            print(f"Available columns: {list(self.data.columns)}")
+                            if self.target_col:  # Inform user why we are prompting again
+                                print(
+                                    f"(Note: Previous target '{self.target_col}' was not found or invalid in the current data)")
+                            print(f"Auto-selected target column is: '{auto_target}'")
+                            confirm = input("Press Enter to accept, or type a different column name: ").strip()
+                            if confirm and confirm in self.data.columns:
+                                target_to_use = confirm
+                                self.pipeline_logger.info(f"User selected target column: {target_to_use}")
+                            elif confirm and confirm not in self.data.columns:
+                                self.pipeline_logger.warning(
+                                    f"User input '{confirm}' not a valid column. Using auto-selected '{auto_target}'.")
+                                print(f"Warning: '{confirm}' not found. Using auto-selected target '{auto_target}'.")
+                                target_to_use = auto_target
+                            else:  # User pressed Enter or provided invalid input when suggestion exists
+                                target_to_use = auto_target
+                                self.pipeline_logger.info(f"User accepted auto-selected target column: {target_to_use}")
+                        else:  # Non-interactive (e.g., scheduled run)
+                            self.pipeline_logger.info(
+                                f"Non-interactive mode detected. Using auto-selected target: {auto_target}")
+                            target_to_use = auto_target
+
+                # --- Final Assignment and Validation ---
+                if target_to_use and target_to_use in self.data.columns:
+                    self.target_col = target_to_use  # Store/update the class attribute for future runs
+                    self.pipeline_logger.info(f"Final target column set to: {self.target_col}")
                 else:
-                    # Auto-detect if no valid manual target
-                    auto_target = self.select_target_column()
-                    self.pipeline_logger.info(f"Auto-selected target column candidate: {auto_target}")
-                    print(f"\n--- Target Column Selection ---")
-                    print(f"Available columns: {list(self.data.columns)}")
-                    print(f"Auto-selected target column is: '{auto_target}'")
-                    confirm = input("Press Enter to accept, or type a different column name: ").strip()
-                    if confirm and confirm in self.data.columns:
-                        self.target_col = confirm
-                        self.pipeline_logger.info(f"User selected target column: {self.target_col}")
-                    elif confirm and confirm not in self.data.columns:
-                        self.pipeline_logger.warning(
-                            f"User input '{confirm}' not a valid column. Using auto-selected '{auto_target}'.")
-                        print(f"Warning: '{confirm}' not found. Using auto-selected target '{auto_target}'.")
-                        self.target_col = auto_target
-                    else:  # User pressed Enter or provided invalid input when suggestion exists
-                        self.target_col = auto_target
-                        self.pipeline_logger.info(f"User accepted auto-selected target column: {self.target_col}")
+                    # This case should be rare now, especially after the enforced initial run prompt
+                    self.pipeline_logger.error("Failed to determine a valid target column after all checks.")
+                    # If non-interactive, raise error. If interactive, it implies a failure during the prompt.
+                    if not sys.stdin.isatty():
+                        raise ValueError("Could not determine a valid target column in non-interactive mode.")
+                    else:
+                        # Should have been caught by the initial run loop, but raise anyway if we get here
+                        raise ValueError("Failed to get a valid target column during interactive selection.")
 
             except ValueError as e:
-                self.pipeline_logger.error(f"Target column selection failed: {e}")
-                # Fallback to prompting if auto-detection fails entirely
-                self.target_col = self.prompt_for_target_column()  # This prompts again if needed
+                # Handle errors during auto-detection or if prompt fails
+                self.pipeline_logger.error(f"Target column selection failed: {e}", exc_info=True)
+                # If it's the initial run, the error likely came from the prompt loop or select_target_column
+                if is_initial_run:
+                    print(f"\nERROR: Critical failure during initial target selection: {e}")
+                    raise  # Critical failure for initial run
+                # If subsequent run and interactive, maybe prompt again? Safer to raise.
+                elif sys.stdin.isatty():
+                    print(f"\nERROR: Failed to select target column: {e}")
+                    raise  # Raise error even if interactive on subsequent runs
+                else:  # Non-interactive subsequent run
+                    raise ValueError(f"Target column selection failed in non-interactive mode: {e}")  # Re-raise
 
-            self.pipeline_logger.info(f"Final target column set to: {self.target_col}")
+            self.pipeline_logger.info(
+                f"Target column for processing: {self.target_col}")  # Log the final decision for this run
 
+            # --- Rest of the process_data method continues below ---
             # 4. Handle Missing Target Values (Impute or Drop Rows)
             if self.data[self.target_col].isnull().any():
                 missing_pct = self.data[self.target_col].isnull().mean() * 100
@@ -591,7 +867,7 @@ class DataScienceAutomation:
 
             # 5. Encode Target Column (if categorical/object) before splitting
             target_dtype = self.data[self.target_col].dtype
-            if pd.api.types.is_object_dtype(target_dtype) or pd.api.types.is_categorical_dtype(target_dtype):
+            if pd.api.types.is_object_dtype(target_dtype) or isinstance(target_dtype, pd.CategoricalDtype):
                 self.pipeline_logger.info(f"Label encoding target column '{self.target_col}'.")
                 le = LabelEncoder()
                 # Ensure no NaNs before encoding (should be handled above, but double-check)
@@ -702,8 +978,8 @@ class DataScienceAutomation:
             col for col in potential_targets
             # Exclude if pattern is in name, UNLESS the name IS exactly the pattern (e.g., column named 'number')
             # AND it's not highly unique (might be a meaningful number)
-            if not any(pattern in col.lower() for pattern in id_like_patterns) or
-               (col.lower() in id_like_patterns and self.data[col].nunique() / len(self.data) < 0.95)
+            if not any(pattern in col.lower() for pattern in id_like_patterns) or (
+                        col.lower() in id_like_patterns and self.data[col].nunique() / len(self.data) < 0.95)
         ]
         self.pipeline_logger.debug(f"Targets after ID pattern filter: {potential_targets}")
 
@@ -894,8 +1170,13 @@ class DataScienceAutomation:
                 ('scaler', StandardScaler())
             ])
 
+            # Function to convert all values to strings to ensure uniform type for encoder
+            def convert_to_string(X_cat):
+                return X_cat.astype(str)
+
             categorical_transformer = Pipeline([
                 ('imputer', SimpleImputer(strategy='constant', fill_value='__MISSING__')),  # Impute again
+                ('to_string', FunctionTransformer(convert_to_string)),  # Convert all values to strings
                 ('encoder', OneHotEncoder(handle_unknown='ignore', sparse_output=False))  # Dense output
             ])
 
@@ -1108,15 +1389,31 @@ class DataScienceAutomation:
                     if hasattr(X_train_proc_sample, 'toarray'): X_train_proc_sample = X_train_proc_sample.toarray()
                     X_train_proc_sample = X_train_proc_sample.astype(float)
 
+                    # Limit test samples for SHAP computation to speed up the process
+                    max_shap_samples = 500  # Reduced from full test set to 500 samples
+                    X_test_shap = None  # Initialize
+                    y_test_shap = None  # Initialize
+                    if self.X_test_processed.shape[0] > max_shap_samples:
+                        self.pipeline_logger.info(
+                            f"Limiting SHAP computation to {max_shap_samples} samples for performance")
+                        # Take a random sample of indices
+                        shap_indices = np.random.choice(self.X_test_processed.shape[0], max_shap_samples, replace=False)
+                        X_test_shap = self.X_test_processed[shap_indices]
+                        y_test_shap = self.y_test.iloc[shap_indices] if hasattr(self.y_test, 'iloc') else self.y_test[
+                            shap_indices]
+                    else:
+                        X_test_shap = self.X_test_processed
+                        y_test_shap = self.y_test
+
                     self.pipeline_logger.debug(
                         f"Using background data shape {X_train_proc_sample.shape} for SHAP TreeExplainer.")
                     self.pipeline_logger.debug(
-                        f"Using test data shape {self.X_test_processed.shape} for SHAP values calculation.")
+                        f"Using test data shape {X_test_shap.shape} for SHAP values calculation.")
 
                     # Check for data consistency before explaining
-                    if X_train_proc_sample.shape[1] != self.X_test_processed.shape[1]:
+                    if X_train_proc_sample.shape[1] != X_test_shap.shape[1]:
                         raise ValueError(
-                            f"Background data columns ({X_train_proc_sample.shape[1]}) != Test data columns ({self.X_test_processed.shape[1]})")
+                            f"Background data columns ({X_train_proc_sample.shape[1]}) != Test data columns ({X_test_shap.shape[1]})")
 
                     explainer = shap.TreeExplainer(
                         core_model,
@@ -1125,11 +1422,52 @@ class DataScienceAutomation:
                         # model_output="raw" # Try 'raw' if prediction probabilities cause issues, might need adjustment
                     )
 
-                    # Calculate SHAP values for the processed test set, disabling additivity check
-                    shap_values_raw = explainer(self.X_test_processed, check_additivity=False)
-                    self.shap_values = shap_values_raw.values
+                    # Add progress indicator for SHAP computation
+                    print("\nComputing SHAP values (this may take a while)...")
+                    total_samples = X_test_shap.shape[0]
+                    batch_size = 50  # Process in smaller batches for progress reporting
+                    all_shap_values = []
 
-                    # Handle multi-class output format
+                    for i in range(0, total_samples, batch_size):
+                        # Calculate end index for current batch
+                        end_idx = min(i + batch_size, total_samples)
+                        # Process current batch
+                        batch_shap = explainer(X_test_shap[i:end_idx], check_additivity=False)
+                        all_shap_values.append(batch_shap.values)
+
+                        # Print progress
+                        progress = min(100, int((end_idx / total_samples) * 100))
+                        print(
+                            f"\r{progress}%|{'=' * (progress // 2)}{' ' * (50 - (progress // 2))}| {end_idx}/{total_samples}",
+                            end="")
+
+                    print("\nSHAP computation complete!")
+
+                    # Combine all batches
+                    if not all_shap_values:
+                        raise ValueError("SHAP computation returned no values.")
+
+                    if isinstance(all_shap_values[0], np.ndarray):
+                        if all_shap_values[0].ndim == 2:  # 2D arrays (regression or binary classification)
+                            self.shap_values = np.vstack([sv for sv in all_shap_values])
+                        elif all_shap_values[0].ndim == 3:  # 3D arrays (multi-class)
+                            self.shap_values = np.vstack([sv for sv in all_shap_values])
+                        else:
+                            raise ValueError(f"Unexpected SHAP array dimension: {all_shap_values[0].ndim}")
+                    elif isinstance(all_shap_values[0], list):  # List of arrays (multi-class)
+                        # Initialize with empty lists for each class
+                        combined = [[] for _ in range(len(all_shap_values[0]))]
+                        # Append values for each class
+                        for batch in all_shap_values:
+                            for class_idx, class_values in enumerate(batch):
+                                combined[class_idx].append(class_values)
+                        # Convert lists to arrays
+                        self.shap_values = [np.vstack(class_values) for class_values in combined]
+                    else:
+                        # Fallback for unexpected format
+                        raise ValueError(f"Unexpected SHAP value type in list: {type(all_shap_values[0])}")
+
+                    # Handle multi-class output format logging
                     if self.task_type == 'classification':
                         if isinstance(self.shap_values, list) and len(self.shap_values) > 1:
                             self.pipeline_logger.info(
@@ -1456,30 +1794,57 @@ class DataScienceAutomation:
         try:
             plt.clf()  # Clear any previous matplotlib state
 
-            shap_values_for_plot = self.shap_values
-            X_display = self.X_test_processed
+            # Determine the number of samples used for SHAP calculation
+            if isinstance(self.shap_values, np.ndarray):
+                shap_sample_count = self.shap_values.shape[0]
+            elif isinstance(self.shap_values, list) and self.shap_values:
+                shap_sample_count = self.shap_values[0].shape[0]
+            else:
+                self.pipeline_logger.warning("Could not determine SHAP sample count. Using full X_test_processed.")
+                shap_sample_count = self.X_test_processed.shape[0]
+
+            # Ensure X_display matches the number of samples used for SHAP
+            if self.X_test_processed.shape[0] < shap_sample_count:
+                self.pipeline_logger.warning(
+                    f"X_test_processed has fewer rows ({self.X_test_processed.shape[0]}) than SHAP values ({shap_sample_count}). This shouldn't happen. Using available rows.")
+                X_display = self.X_test_processed
+                # Adjust SHAP values if possible (this is tricky and might indicate a prior error)
+                if isinstance(self.shap_values, np.ndarray):
+                    self.shap_values = self.shap_values[:X_display.shape[0]]
+                elif isinstance(self.shap_values, list):
+                    self.shap_values = [sv[:X_display.shape[0]] for sv in self.shap_values]
+                shap_sample_count = X_display.shape[0]  # Update count
+            elif self.X_test_processed.shape[0] > shap_sample_count:
+                self.pipeline_logger.info(
+                    f"Using the first {shap_sample_count} rows of X_test_processed to match SHAP values.")
+                X_display = self.X_test_processed[:shap_sample_count]
+            else:
+                X_display = self.X_test_processed
+
+            shap_values_for_plot = self.shap_values  # Use the (potentially adjusted) self.shap_values
 
             self.pipeline_logger.debug(
-                f"SHAP values type: {type(self.shap_values)}, Plot data shape: {X_display.shape}")
-            if isinstance(self.shap_values, np.ndarray):
-                self.pipeline_logger.debug(f"SHAP values shape: {self.shap_values.shape}")
-            elif isinstance(self.shap_values, list):
-                self.pipeline_logger.debug(f"SHAP values list length: {len(self.shap_values)}")
-                if len(self.shap_values) > 0:
-                    self.pipeline_logger.debug(f"SHAP values first element shape: {self.shap_values[0].shape}")
+                f"SHAP values type: {type(shap_values_for_plot)}, Plot data shape: {X_display.shape}")
+            if isinstance(shap_values_for_plot, np.ndarray):
+                self.pipeline_logger.debug(f"SHAP values shape: {shap_values_for_plot.shape}")
+            elif isinstance(shap_values_for_plot, list):
+                self.pipeline_logger.debug(f"SHAP values list length: {len(shap_values_for_plot)}")
+                if len(shap_values_for_plot) > 0:
+                    self.pipeline_logger.debug(f"SHAP values first element shape: {shap_values_for_plot[0].shape}")
 
             # Handle multi-class SHAP values (list or 3D array)
             target_class_index = 0  # Default to class 0 or regression
             target_class_name = " (Regression or Class 0)"
             if self.task_type == 'classification':
                 n_classes = 1
-                if isinstance(self.shap_values, list):
-                    n_classes = len(self.shap_values)
-                elif isinstance(self.shap_values, np.ndarray) and self.shap_values.ndim == 3:
-                    n_classes = self.shap_values.shape[2]
+                if isinstance(shap_values_for_plot, list):
+                    n_classes = len(shap_values_for_plot)
+                elif isinstance(shap_values_for_plot, np.ndarray) and shap_values_for_plot.ndim == 3:
+                    n_classes = shap_values_for_plot.shape[2]
 
                 if n_classes > 1:
-                    target_class_index = 1  # Often interested in class 1 for binary/multi-class
+                    # For binary classification, always use class 0 to avoid reshape errors
+                    target_class_index = 0
                     if self.target_col in self.label_encoders:
                         try:
                             target_class_name = f" (Class: {self.label_encoders[self.target_col].classes_[target_class_index]})"
@@ -1491,23 +1856,23 @@ class DataScienceAutomation:
                     self.pipeline_logger.info(
                         f"Multi-class SHAP values detected. Plotting summary for class index {target_class_index}{target_class_name}.")
 
-                    if isinstance(self.shap_values, list):
-                        if target_class_index < len(self.shap_values):
-                            shap_values_for_plot = self.shap_values[target_class_index]
+                    if isinstance(shap_values_for_plot, list):
+                        if target_class_index < len(shap_values_for_plot):
+                            shap_values_for_plot = shap_values_for_plot[target_class_index]
                         else:
                             self.pipeline_logger.warning(
                                 f"Target class index {target_class_index} out of bounds for SHAP list. Using class 0.")
                             target_class_index = 0
-                            shap_values_for_plot = self.shap_values[0]
-                    elif self.shap_values.ndim == 3:
-                        if target_class_index < self.shap_values.shape[2]:
-                            shap_values_for_plot = self.shap_values[:, :, target_class_index]
+                            shap_values_for_plot = shap_values_for_plot[0]
+                    elif shap_values_for_plot.ndim == 3:
+                        if target_class_index < shap_values_for_plot.shape[2]:
+                            shap_values_for_plot = shap_values_for_plot[:, :, target_class_index]
                         else:
                             self.pipeline_logger.warning(
-                                f"Target class index {target_class_index} out of bounds for SHAP array shape {self.shap_values.shape}. Using class 0.")
+                                f"Target class index {target_class_index} out of bounds for SHAP array shape {shap_values_for_plot.shape}. Using class 0.")
                             target_class_index = 0
-                            shap_values_for_plot = self.shap_values[:, :, 0]
-                elif isinstance(self.shap_values, np.ndarray) and self.shap_values.ndim == 2:
+                            shap_values_for_plot = shap_values_for_plot[:, :, 0]
+                elif isinstance(shap_values_for_plot, np.ndarray) and shap_values_for_plot.ndim == 2:
                     # Binary classification might sometimes return only one set of values (for class 1)
                     self.pipeline_logger.info(
                         "Assuming SHAP values are for the positive class in binary classification.")
@@ -1523,15 +1888,51 @@ class DataScienceAutomation:
                 return False
 
             # Create DataFrame for better feature name handling in plot
-            # Ensure indices align if X_display comes from X_test_processed
-            X_display_df = pd.DataFrame(X_display, columns=self.feature_names)  # Index might be reset, check if needed
+            X_display_df = pd.DataFrame(X_display, columns=self.feature_names)
 
-            # Generate the plot (use matplotlib context)
-            fig = plt.figure()  # Create a figure context explicitly
-            shap.summary_plot(shap_values_for_plot, X_display_df, show=False, plot_size=None)  # Use DataFrame here
+            # Ensure X_display_df columns match shap_values_for_plot columns
+            if isinstance(shap_values_for_plot, np.ndarray) and X_display_df.shape[1] != shap_values_for_plot.shape[1]:
+                self.pipeline_logger.warning(
+                    f"Column count mismatch: X_display_df has {X_display_df.shape[1]} columns, shap_values_for_plot has {shap_values_for_plot.shape[1]} columns. Adjusting feature names...")
+                # Adjust feature names to match SHAP values columns
+                if X_display_df.shape[1] > shap_values_for_plot.shape[1]:
+                    # If X_display_df has more columns, trim it
+                    X_display_df = X_display_df.iloc[:, :shap_values_for_plot.shape[1]]
+                else:
+                    # If SHAP values have more columns, trim them
+                    shap_values_for_plot = shap_values_for_plot[:, :X_display_df.shape[1]]
+
+            # Limit to top 20 features for faster plotting
+            max_display_features = 20
+            plot_feature_names = self.feature_names  # Use full list initially
+            if shap_values_for_plot.shape[1] > max_display_features:
+                self.pipeline_logger.info(f"Limiting SHAP plot to top {max_display_features} features for performance")
+
+                # Calculate mean absolute SHAP value for each feature
+                feature_importance = np.mean(np.abs(shap_values_for_plot), axis=0)
+                top_indices = np.argsort(feature_importance)[-max_display_features:]
+
+                # Subset both SHAP values and feature names
+                shap_values_for_plot = shap_values_for_plot[:, top_indices]
+                X_display_df = X_display_df.iloc[:, top_indices]
+
+                # Update feature names list for the plot
+                plot_feature_names = [self.feature_names[i] for i in top_indices]
+                X_display_df.columns = plot_feature_names  # Update DF columns for plot
+
+            # Generate the plot with optimized settings
+            fig = plt.figure(figsize=(10, 8))  # Create a figure context with fixed size
+            shap.summary_plot(
+                shap_values_for_plot,
+                X_display_df,  # Pass DataFrame with correct column names
+                feature_names=plot_feature_names,  # Explicitly pass potentially subsetted names
+                show=False,
+                max_display=max_display_features,  # Limit displayed features
+                plot_size=None  # Let summary_plot manage size within the figure context
+            )
             plt.title(f"SHAP Summary Plot{target_class_name}")
             save_path = os.path.join(self.visualization_dir, "shap_summary.png")
-            plt.savefig(save_path, bbox_inches='tight')  # Use bbox_inches='tight'
+            plt.savefig(save_path, bbox_inches='tight', dpi=100)  # Lower DPI for faster saving
             self.pipeline_logger.info(f"SHAP summary plot saved to {save_path}")
             return True
 
@@ -1583,17 +1984,67 @@ class DataScienceAutomation:
 
             # Get indices of top features based on importance scores
             # These indices correspond to the columns in the *transformed* data
-            top_features_transformed_indices = np.argsort(importances)[-top_n_pdp:][
-                                               ::-1]  # Get top N indices, descending order
+            all_feature_indices = np.argsort(importances)[::-1]  # All indices, descending order by importance
+
+            # Filter out potentially problematic features AND prioritize numeric
+            filtered_feature_indices = []
+            numeric_indices = []
+            other_indices = []
+
+            for idx in all_feature_indices:
+                feature_name = self.feature_names[idx]
+                # Skip features that are likely to cause problems
+                if "__MISSING__" in feature_name:
+                    self.pipeline_logger.info(
+                        f"Skipping potential problematic feature for PDP: {feature_name} (contains __MISSING__)")
+                    continue
+                # Heuristic for season-related features (adjust as needed)
+                if "season" in feature_name.lower() and any(
+                        s in feature_name for s in ["1 Season", "2 Seasons", "3 Seasons"]):
+                    self.pipeline_logger.info(
+                        f"Skipping potential problematic feature for PDP: {feature_name} (Low-count Season)")
+                    continue
+
+                # Check if the original feature was numeric (before OHE)
+                # This requires mapping back, which is complex. Simpler: check if name is in self.numerical_cols
+                # OR if it doesn't contain '___' which is typical for OHE.
+                is_likely_numeric_or_simple_cat = False
+                if '___' not in feature_name:  # Likely original numeric or simple categorical
+                    # Check if it was originally numeric
+                    original_col_name = feature_name.split('___')[0]  # Get base name
+                    if original_col_name in self.numerical_cols:
+                        is_likely_numeric_or_simple_cat = True
+                    # Also allow simple categorical features if needed
+                    elif original_col_name in self.categorical_cols and self.processed_data[
+                        original_col_name].nunique() < 20:  # Allow low-cardinality cats
+                        is_likely_numeric_or_simple_cat = True
+
+                if is_likely_numeric_or_simple_cat:
+                    numeric_indices.append(idx)
+                else:
+                    other_indices.append(idx)  # Likely OHE features
+
+            # Prioritize numeric/simple features, then add others if needed
+            filtered_feature_indices.extend(numeric_indices)
+            remaining_needed = top_n_pdp - len(filtered_feature_indices)
+            if remaining_needed > 0:
+                filtered_feature_indices.extend(other_indices[:remaining_needed])
+
+            # Take only the top N filtered features
+            top_features_transformed_indices = filtered_feature_indices[:top_n_pdp]
             top_features_names = [self.feature_names[i] for i in top_features_transformed_indices]
 
-            self.pipeline_logger.info(f"Generating PDP for top {top_n_pdp} features: {top_features_names}")
+            if not top_features_transformed_indices:
+                self.pipeline_logger.warning("No suitable features found for PDP after filtering.")
+                return False
+
+            self.pipeline_logger.info(
+                f"Generating PDP for filtered top {len(top_features_transformed_indices)} features: {top_features_names}")
             self.pipeline_logger.debug(f"Using feature indices in transformed data: {top_features_transformed_indices}")
 
             # Use the processed test data (or a sample if very large) for PDP calculation
-            # X_pdp_data = self.X_test_processed # Use the full processed test set for now
-            # If X_test_processed is huge, sample it:
-            sample_size_pdp = min(1000, self.X_test_processed.shape[0])
+            # Reduce sample size for faster processing
+            sample_size_pdp = min(500, self.X_test_processed.shape[0])  # Reduced from 1000 to 500
             pdp_indices = np.random.choice(self.X_test_processed.shape[0], sample_size_pdp, replace=False)
             X_pdp_data = self.X_test_processed[pdp_indices, :]
             self.pipeline_logger.info(f"Using a sample of {sample_size_pdp} points for PDP calculation.")
@@ -1602,43 +2053,130 @@ class DataScienceAutomation:
             pdp_target_class = None
             title_suffix = ""
             if self.task_type == 'classification':
-                num_classes = len(np.unique(self.y_test))  # Use y_test to get classes
+                unique_classes = np.unique(self.y_test)
+                num_classes = len(unique_classes)
+                self.pipeline_logger.info(f"Found {num_classes} unique classes in y_test: {unique_classes}")
+
+                # Check if the model is a binary classifier
+                is_binary_classifier = False
+                try:
+                    # Check if the model has predict_proba method
+                    if hasattr(core_model, 'predict_proba'):
+                        # Try to get a prediction to check its shape
+                        sample_pred = core_model.predict_proba(X_pdp_data[:1])
+                        is_binary_classifier = sample_pred.shape[1] == 2
+                        self.pipeline_logger.info(
+                            f"Model prediction shape: {sample_pred.shape}, binary classifier: {is_binary_classifier}")
+                    else:
+                        self.pipeline_logger.info(
+                            "Model does not have predict_proba method, cannot determine if binary classifier")
+                except Exception as e:
+                    self.pipeline_logger.warning(f"Could not determine if model is binary classifier: {e}")
+
                 if num_classes > 1:
-                    # Plot for class 1 if it exists, otherwise class 0
-                    pdp_target_class = 1 if 1 < num_classes else 0
+                    # For multi-class classification, use class index 0
+                    pdp_target_class = 0
                     title_suffix = f" (Target Class {pdp_target_class})"
                     self.pipeline_logger.info(f"PDP: Plotting for target class {pdp_target_class}.")
                 else:
-                    self.pipeline_logger.info("PDP: Only one class detected, plotting standard PDP.")
+                    # For single class in test data, don't specify target class to avoid reshape errors
+                    self.pipeline_logger.info(
+                        "PDP: Only one class detected, plotting standard PDP without target class.")
 
             # Generate PDP plots
-            pdp_kind = 'both' if self.task_type == 'classification' else 'average'
+            pdp_kind = 'average'  # Use 'average' for all cases to avoid reshape errors
             n_cols_grid = 3  # Arrange plots in grid
-            n_rows_grid = (top_n_pdp + n_cols_grid - 1) // n_cols_grid
+            n_rows_grid = (len(top_features_transformed_indices) + n_cols_grid - 1) // n_cols_grid
 
             # Create figure and axes for the grid
             fig, ax = plt.subplots(n_rows_grid, n_cols_grid, figsize=(5 * n_cols_grid, 4 * n_rows_grid),
                                    constrained_layout=True)
-            ax = ax.flatten()  # Flatten axes array for easy iteration
+            ax = ax.flatten() if hasattr(ax, 'flatten') else [ax]  # Handle single subplot case
 
-            display = PartialDependenceDisplay.from_estimator(
-                estimator=core_model,  # Use the core model
-                X=X_pdp_data,  # Use the (sampled) transformed data
-                features=top_features_transformed_indices,  # Use indices in transformed data
-                feature_names=self.feature_names,  # Provide all feature names for labeling
-                target=pdp_target_class,  # Specify target class for multi-class
-                kind=pdp_kind,
-                random_state=42,
-                ax=ax[:top_n_pdp]  # Pass the required number of axes
-                # n_jobs=-1 # Can cause issues in some environments, test carefully
-            )
+            # Try to generate PDP plots for each feature individually to avoid total failure
+            successful_features = 0
+            for i, feature_idx in enumerate(top_features_transformed_indices):
+                if i >= len(ax):
+                    break  # Stop if we run out of axes
+
+                feature_name = self.feature_names[feature_idx]
+                error_message = None  # Store potential error message
+
+                # --- Check for single unique value in the sample ---
+                try:
+                    feature_values_in_sample = X_pdp_data[:, feature_idx]
+                    unique_values_in_sample = np.unique(feature_values_in_sample)
+                    if len(unique_values_in_sample) <= 1:
+                        self.pipeline_logger.warning(
+                            f"Skipping PDP for '{feature_name}': Only {len(unique_values_in_sample)} unique value(s) in the PDP sample data.")
+                        error_message = f"Skipped: {feature_name}\n(Only 1 unique value in sample)"
+                        # Continue to the error display logic below
+                except Exception as check_err:
+                    self.pipeline_logger.warning(
+                        f"Error checking unique values for PDP feature '{feature_name}': {check_err}")
+                    error_message = f"PDP Error for\n{feature_name}\n(Check unique values)"
+                    # Continue to the error display logic below
+                # --- End Check ---
+
+                # If no error message yet, try generating the plot
+                if error_message is None:
+                    try:
+                        # Determine arguments based on target class
+                        pdp_args = {
+                            'estimator': core_model,
+                            'X': X_pdp_data,
+                            'features': [feature_idx],
+                            'feature_names': self.feature_names,
+                            'kind': pdp_kind,
+                            'random_state': 42,
+                            'ax': ax[i]
+                        }
+                        if pdp_target_class is not None:
+                            pdp_args['target'] = pdp_target_class
+
+                        # Generate PDP
+                        feature_display = PartialDependenceDisplay.from_estimator(**pdp_args)
+                        ax[i].set_title(f"PDP: {feature_name}", fontsize=10)  # Set clearer title
+                        successful_features += 1
+                        continue  # Go to the next feature if successful
+
+                    except ValueError as ve:
+                        # Check for the specific reshape error or other common ValueErrors
+                        if "cannot reshape array" in str(ve) or "contains non-numeric data" in str(
+                                ve) or "could not convert" in str(ve) or "Feature not suitable for PDP" in str(ve):
+                            self.pipeline_logger.warning(
+                                f"ValueError (likely type/reshape) for PDP of '{feature_name}': {ve}")
+                            error_message = f"PDP Failed:\n{feature_name}\n(Type/Reshape Error)"
+                        else:
+                            self.pipeline_logger.warning(f"Generic ValueError for PDP of '{feature_name}': {ve}")
+                            error_message = f"PDP Failed:\n{feature_name}\n(ValueError)"
+                    except IndexError as ie:
+                        self.pipeline_logger.warning(f"IndexError during PDP for '{feature_name}': {ie}")
+                        error_message = f"PDP Failed:\n{feature_name}\n(Index Error)"
+                    except Exception as feature_err:
+                        self.pipeline_logger.warning(
+                            f"Unexpected error generating PDP for '{feature_name}': {feature_err}", exc_info=True)
+                        error_message = f"PDP Failed:\n{feature_name}\n(Error)"
+
+                # --- Display Error on Axis if error_message is set ---
+                if error_message:
+                    ax[i].clear()
+                    ax[i].text(0.5, 0.5, error_message,
+                               horizontalalignment='center', verticalalignment='center',
+                               transform=ax[i].transAxes, fontsize=9, color='red')
+                    ax[i].set_xticks([])
+                    ax[i].set_yticks([])
 
             # Remove empty subplots if any
-            for i in range(top_n_pdp, len(ax)):
+            for i in range(len(top_features_transformed_indices), len(ax)):
                 fig.delaxes(ax[i])
 
+            if successful_features == 0:
+                self.pipeline_logger.error("All PDP plots failed to generate.")
+                plt.close(fig)
+                return False
+
             fig.suptitle(f"Partial Dependence Plots{title_suffix}", fontsize=16)
-            # fig.tight_layout(rect=[0, 0.03, 1, 0.95]) # constrained_layout=True often works better
 
             pdp_path = os.path.join(self.visualization_dir, "partial_dependence_plots.png")
             fig.savefig(pdp_path, bbox_inches='tight')
@@ -1650,6 +2188,24 @@ class DataScienceAutomation:
             self.pipeline_logger.error(
                 f"ValueError during Partial Dependence calculation: {ve}. Check feature types/indices.", exc_info=True)
             self.pipeline_logger.error(traceback.format_exc())
+
+            # Create a simple fallback plot with error message
+            try:
+                fallback_fig, fallback_ax = plt.subplots(figsize=(10, 6))
+                fallback_ax.text(0.5, 0.5, f"Partial Dependence Plot generation failed:\n{str(ve)}",
+                                 horizontalalignment='center', verticalalignment='center',
+                                 transform=fallback_ax.transAxes, fontsize=12)
+                fallback_ax.set_xticks([])
+                fallback_ax.set_yticks([])
+                fallback_ax.set_title("PDP Error", fontsize=14)
+
+                pdp_path = os.path.join(self.visualization_dir, "partial_dependence_plots.png")
+                fallback_fig.savefig(pdp_path, bbox_inches='tight')
+                plt.close(fallback_fig)
+                self.pipeline_logger.info(f"Fallback error message plot saved to {pdp_path}")
+            except Exception as fallback_err:
+                self.pipeline_logger.error(f"Even fallback plot failed: {fallback_err}")
+
             return False
         except Exception as e:
             self.pipeline_logger.error(f"Partial dependence plot generation failed: {str(e)}", exc_info=True)
@@ -1800,7 +2356,7 @@ class DataScienceAutomation:
                 self.dashboard_running = True
                 try:
                     # Use host='0.0.0.0' to make it accessible on the network
-                    app.run_server(debug=False, port=8050, use_reloader=False, host='0.0.0.0')
+                    app.run(debug=False, port=8050, use_reloader=False, host='0.0.0.0')
                 except Exception as server_err:
                     self.pipeline_logger.error(f"Dash server failed to start or crashed: {server_err}", exc_info=True)
                 finally:
@@ -1906,7 +2462,6 @@ class DataScienceAutomation:
                 "Partial Dependence Plots not generated or found."),
         ], style={'padding': '20px'})
 
-    # CORRECTED _build_model_performance_tab
     def _build_model_performance_tab(self, confusion_matrix_img, residual_plot_img):
         self.pipeline_logger.debug("Building Model Performance tab...")
         perf_children = [html.H3("Model Performance")]
@@ -1934,7 +2489,7 @@ class DataScienceAutomation:
             elif self.task_type == 'regression':  # Use elif for clarity
                 rf_metric = r2_score(self.y_test, self.predictions_rf_test)
                 knn_metric = r2_score(self.y_test, self.predictions_knn_test)
-                metric_label = "R Score"
+                metric_label = "R2 Score"  # Corrected label
                 plot_title = "Residual Plot (Random Forest)"
                 perf_img = residual_plot_img
             # --- End of metric calculation ---
@@ -2067,7 +2622,7 @@ class DataScienceAutomation:
             predictions_sample = self.predictions.head(50)  # Show more samples
             # Round numeric columns for display
             numeric_pred_cols = predictions_sample.select_dtypes(include=np.number).columns
-            predictions_sample[numeric_pred_cols] = predictions_sample[numeric_pred_cols].round(3)
+            predictions_sample.loc[:, numeric_pred_cols] = predictions_sample[numeric_pred_cols].round(3)
 
             predictions_children.append(dash_table.DataTable(
                 id='predictions-table',
@@ -2110,13 +2665,18 @@ class DataScienceAutomation:
                         "SHAP values in list have different shapes. Using first element for bar chart.")
                     shap_importance = np.mean(abs_shap[0], axis=0)
                 else:
+                    # Ensure shapes are compatible before stacking and averaging
+                    if len(set(s.shape[1] for s in abs_shap)) > 1:
+                        raise ValueError("SHAP arrays in list have different number of features.")
                     shap_importance = np.mean(np.array(abs_shap), axis=(0, 2))  # Mean over samples and classes
-            elif self.shap_values.ndim == 3:  # Multi-class array output (samples, features, classes)
+            elif isinstance(self.shap_values,
+                            np.ndarray) and self.shap_values.ndim == 3:  # Multi-class array output (samples, features, classes)
                 shap_importance = np.mean(np.abs(self.shap_values), axis=(0, 2))  # Mean over samples and classes
-            elif self.shap_values.ndim == 2:  # Regression or single-class classification
+            elif isinstance(self.shap_values,
+                            np.ndarray) and self.shap_values.ndim == 2:  # Regression or single-class classification
                 shap_importance = np.mean(np.abs(self.shap_values), axis=0)
             else:
-                raise ValueError(f"Unexpected SHAP values shape: {self.shap_values.shape}")
+                raise ValueError(f"Unexpected SHAP values format: {type(self.shap_values)}")
 
             # Ensure lengths match
             if len(shap_importance) != len(self.feature_names):
@@ -2175,7 +2735,7 @@ class DataScienceAutomation:
                 if pd.api.types.is_numeric_dtype(col_dtype):
                     fig = px.histogram(self.processed_data, x=selected_col, nbins=50,
                                        title=f"Distribution of {selected_col}")
-                elif pd.api.types.is_categorical_dtype(col_dtype) or pd.api.types.is_object_dtype(
+                elif isinstance(col_dtype, pd.CategoricalDtype) or pd.api.types.is_object_dtype(
                         col_dtype) or pd.api.types.is_bool_dtype(col_dtype):
                     # For categorical/object/bool, show top N categories if too many
                     top_n = 25
@@ -2257,25 +2817,28 @@ class DataScienceAutomation:
     def schedule_pipeline(self, task_type=None):
         """ Allows user to schedule runs of the pipeline with daily, weekly, or monthly frequency. """
         try:
-            while True:
-                schedule_choice = input(
-                    "\nDo you want to schedule the pipeline for future runs? (yes/no): ").strip().lower()
-                if schedule_choice.startswith('y'):
-                    break  # Proceed to frequency selection
-                elif schedule_choice.startswith('n'):
-                    self.scheduler_logger.info("User chose not to schedule the pipeline.")
-                    print("Pipeline will not be scheduled.")
-                    return  # Exit the scheduling method
-                else:
-                    print("Invalid input. Please type 'yes' or 'no'.")
+            print("\n--- Scheduling Configuration ---")
+            print("Pipeline scheduling is recommended to keep your models and insights up-to-date.")
 
             # --- Frequency Selection ---
             while True:
-                schedule_frequency = input("Enter scheduling frequency (daily/weekly/monthly): ").strip().lower()
-                if schedule_frequency in ['daily', 'weekly', 'monthly']:
+                print("\nSelect scheduling frequency:")
+                print("1. Daily")
+                print("2. Weekly")
+                print("3. Monthly")
+                schedule_frequency_choice = input("Enter your choice (1/2/3): ").strip()
+
+                if schedule_frequency_choice == '1':
+                    schedule_frequency = 'daily'
+                    break
+                elif schedule_frequency_choice == '2':
+                    schedule_frequency = 'weekly'
+                    break
+                elif schedule_frequency_choice == '3':
+                    schedule_frequency = 'monthly'
                     break
                 else:
-                    print("Invalid frequency. Please enter 'daily', 'weekly', or 'monthly'.")
+                    print("Invalid choice. Please enter 1, 2, or 3.")
 
             # --- Time Input ---
             while True:
@@ -2373,31 +2936,84 @@ class DataScienceAutomation:
             print(f"\nError during scheduling setup: {e}")
             # Don't raise here, allow main program flow to potentially continue or exit gracefully
 
-    def run_pipeline(self, start_dashboard=True, task_type=None, reload_data=True):
+    def run_pipeline(self, start_dashboard=True, task_type=None, reload_data=True, is_initial_run=False):
         """
         Main pipeline execution flow: Load, Process, Train/Predict, Dashboard.
+
+        Args:
+            start_dashboard (bool): Whether to start the Dash dashboard.
+            task_type (str, optional): 'classification' or 'regression'. Defaults to None (auto-detect).
+            reload_data (bool): Whether to attempt reloading data from the source.
+            is_initial_run (bool): Flag to indicate if this is the very first execution.
         """
         start_time = time.time()
         self.pipeline_logger.info("=" * 30 + " Pipeline Execution Started " + "=" * 30)
         try:
             # --- Data Ingestion ---
-            if reload_data or self.original_data is None:  # Use original_data to check if loaded before
-                self.pipeline_logger.info("Loading/Reloading data...")
-                self.prompt_for_dataset()  # Handles loading into self.data and self.original_data
+            # Determine if we need to load/reload data
+            load_needed = False
+            if reload_data:
+                # If reload is requested, we always need to load something
+                load_needed = True
+            elif self.original_data is None:
+                # If not reloading, but no data exists yet, we need to load
+                load_needed = True
+                self.pipeline_logger.info("No data loaded previously and reload=False. Triggering initial load.")
             else:
-                self.pipeline_logger.info("Using previously loaded data.")
-                # Ensure self.data is reset from original if not reloading file
+                # Not reloading and data exists, use existing data
+                self.pipeline_logger.info("Using previously loaded data (not reloading from source).")
+                # Ensure self.data is reset from original for processing
                 self.data = self.original_data.copy()
 
+            if load_needed:
+                # Check if data source parameters are stored (meaning it's not the very first run)
+                can_auto_reload = self.data_source_type and (self.file_path or self.db_connection_string)
+
+                if can_auto_reload and not is_initial_run:
+                    # --- Automatic Reload Path (Scheduled Runs or subsequent manual runs with reload=True) ---
+                    self.pipeline_logger.info("Attempting automatic data reload...")
+                    try:
+                        self._reload_data_automatically()
+                    except Exception as auto_reload_err:
+                        # If auto-reload fails, log error and stop this pipeline run
+                        self.pipeline_logger.error(
+                            f"Stopping pipeline run due to automatic data reload failure: {auto_reload_err}",
+                            exc_info=True)
+                        print(f"\nERROR: Pipeline run failed during automatic data reload. Check logs.")
+                        return  # Exit the run_pipeline method
+                else:
+                    # --- Interactive Load Path (Very First Run or if auto-reload isn't possible) ---
+                    if is_initial_run:
+                        self.pipeline_logger.info("Initial run: Triggering interactive data source selection.")
+                        # No warning message here for the first run
+                    else:
+                        # This case might happen if parameters were somehow lost or reload=True was forced without params
+                        self.pipeline_logger.warning(
+                            "Data source parameters not found or initial run flag not set. Triggering interactive prompt.")
+                    self.prompt_for_dataset()  # Needs interactive setup
+
+            # Check if data loading was successful before proceeding
+            if self.data is None or self.data.empty:
+                self.pipeline_logger.error("Pipeline cannot proceed: Data is empty or failed to load.")
+                print("\nERROR: Pipeline cannot proceed as data is missing or empty.")
+                return  # Exit the run_pipeline method
+
             # --- Data Processing ---
+            # process_data now correctly handles interactive vs non-interactive target selection based on sys.stdin.isatty()
+            # and prioritizes self.target_col if it exists and is valid.
             self.pipeline_logger.info("Starting data processing...")
-            self.process_data(manual_target_col=None)  # Allow process_data to handle target selection
+            # Pass the is_initial_run flag to process_data
+            self.process_data(manual_target_col=None, is_initial_run=is_initial_run)  # Pass the flag here
             self.pipeline_logger.info("Data processing finished.")
 
             # --- Training & Prediction ---
             self.pipeline_logger.info("Starting model training and prediction...")
             # Pass the user-specified or auto-detected task_type
-            self.train_predict(task_type=task_type)  # train_predict uses self.task_type if task_type is None
+            # train_predict uses self.task_type if task_type is None
+            # Ensure self.task_type is updated if auto-detected during train_predict
+            if task_type:
+                self.task_type = task_type  # Use provided task type
+            self.train_predict(task_type=self.task_type)  # Pass the potentially updated self.task_type
             self.pipeline_logger.info("Model training and prediction finished.")
 
             # --- Dashboard ---
@@ -2436,7 +3052,6 @@ class DataScienceAutomation:
         finally:
             self.pipeline_logger.info("=" * 30 + " Pipeline Execution Finished " + "=" * 30)
 
-
 # =================== Main Execution Block ===================
 if __name__ == "__main__":
 
@@ -2448,16 +3063,9 @@ if __name__ == "__main__":
         signal.signal(signal.SIGTERM, automation.graceful_exit)  # Handle termination signal too
 
         print("\n--- Automated Data Science Pipeline ---")
-        print("Choose an option:")
-        print("1. Run pipeline once and launch dashboard")
-        print("2. Run pipeline once, launch dashboard, then optionally schedule future runs")
-        main_choice = input("Enter 1 or 2: ").strip()
+        print("Starting initial pipeline run and dashboard creation...")
 
-        while main_choice not in ['1', '2']:
-            print("Invalid choice. Please enter 1 or 2.")
-            main_choice = input("Enter 1 or 2: ").strip()
-
-        # Ask for task type upfront (optional)
+        # Ask for task type upfront (optional) - This remains as it's configuration for the run
         task_type_input = input(
             "Enter task type (classification/regression) or press Enter for auto-detection: ").strip().lower()
         task_type = task_type_input if task_type_input in ['classification', 'regression'] else None
@@ -2468,40 +3076,59 @@ if __name__ == "__main__":
             automation.pipeline_logger.info("Task type will be auto-detected.")
             print("Task type will be auto-detected.")
 
-        # --- Run the pipeline and launch the dashboard ---
+        # --- Run the pipeline once and launch the dashboard ---
         # Pass the user-specified task_type (or None) to run_pipeline
-        automation.run_pipeline(start_dashboard=True, task_type=task_type, reload_data=True)
+        # reload_data=True ensures data is loaded on this first run.
+        # **** ADD is_initial_run=True HERE ****
+        automation.run_pipeline(start_dashboard=True, task_type=task_type, reload_data=True, is_initial_run=True)
 
-        # --- Handle Scheduling Option ---
-        if main_choice == "2":
-            # Pass the determined task_type (either user-provided or auto-detected) to schedule_pipeline
+        # --- Proceed to Scheduling Configuration AFTER successful initial run/dashboard launch ---
+        if automation.dashboard_running:
+            print("\nInitial run complete. Dashboard is running in the background.")
+            print("Proceeding to configure the schedule for future automated runs.")
+
+            # Pass the determined task_type (either user-provided or auto-detected during the first run)
+            # to schedule_pipeline so scheduled jobs use the correct type.
+            # The schedule_pipeline method itself handles the user interaction for setting up the schedule.
+            # **** Pass the potentially updated automation.task_type ****
             automation.schedule_pipeline(task_type=automation.task_type)
+
+            # --- Keep the main thread alive for the scheduler and dashboard ---
+            # The schedule_pipeline method now contains the loop that checks schedule.run_pending()
+            # However, the main script still needs to stay alive for the dashboard thread
+            # and the scheduler loop within schedule_pipeline to function.
+            print("\nScheduling configured. The scheduler is now active.")
+            print("IMPORTANT: Keep this terminal window open for the scheduler and dashboard to remain active.")
+            print("Press Ctrl+C in this terminal to stop the entire program (scheduler and dashboard).")
+            try:
+                # Keep main thread alive indefinitely until interrupted
+                while True:
+                    time.sleep(1)  # Minimal sleep to prevent busy-waiting
+            except KeyboardInterrupt:
+                # This will be caught here if Ctrl+C is pressed *after* scheduling is set up.
+                # The graceful_exit handler should ideally manage the shutdown.
+                print("\nCtrl+C detected during active run. Exiting program.")
+                automation.pipeline_logger.info("Exiting program after scheduling was active (Ctrl+C).")
+                # sys.exit(0) # graceful_exit handles this
+
         else:
-            # For choice 1, keep the main thread alive while the dashboard runs
-            if automation.dashboard_running:
-                print("\nDashboard is running in the background.")
-                print("Press Ctrl+C in this terminal to stop the main program (and the dashboard).")
-                try:
-                    # Keep main thread alive indefinitely until interrupted
-                    while True:
-                        time.sleep(1)
-                except KeyboardInterrupt:
-                    print("\nCtrl+C detected. Exiting program.")
-                    automation.pipeline_logger.info("Exiting program after manual run (Ctrl+C).")
-            else:
-                print("\nPipeline finished. Dashboard did not start or failed to start (check logs).")
+            # This block executes if the dashboard failed to start after the initial run.
+            print("\nPipeline finished, but the dashboard did not start or failed (check logs).")
+            print("Scheduling will be skipped as the dashboard is not running.")
+            automation.pipeline_logger.warning("Dashboard failed to start. Skipping scheduling configuration.")
 
 
     except KeyboardInterrupt:
-        print("\nOperation cancelled by user during setup.")
+        # This catches Ctrl+C if pressed *during* the initial setup/run/scheduling config
+        print("\nOperation cancelled by user during setup or initial run.")
         if automation:
-            automation.pipeline_logger.warning("Pipeline setup interrupted by user (KeyboardInterrupt).")
+            automation.pipeline_logger.warning("Pipeline setup/initial run interrupted by user (KeyboardInterrupt).")
         else:
-            # Use base logger if automation object wasn't created
             logger.warning("Pipeline setup interrupted by user before initialization.")
     except (FileNotFoundError, ValueError, MemoryError) as e:
         # These errors are logged within run_pipeline, just print final message
         print(f"\nCritical Error during pipeline execution. Check 'pipeline.log'. Exiting.")
+        # No sys.exit needed here, program will terminate naturally after the exception.
     except Exception as e:
         # Catch-all for unexpected errors during setup or if run_pipeline raised it
         error_msg = f"A critical error occurred in the main execution block: {e}"
@@ -2510,7 +3137,7 @@ if __name__ == "__main__":
             automation.pipeline_logger.critical(error_msg, exc_info=True)
         else:
             logger.critical(error_msg, exc_info=True)  # Use base logger
-        sys.exit(1)  # Exit with error code
+        sys.exit(1)  # Exit with error code for unexpected critical errors
 
     finally:
         logging.shutdown()  # Ensure all logs are flushed before exiting
